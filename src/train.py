@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from sklearn.metrics import roc_auc_score
+from tqdm import tqdm
 
 from . import config
 from .dataset import KneeDataset, attach_label_weights
@@ -58,13 +59,17 @@ def macro_auc(
     return macro, aucs
 
 
-def run_epoch(model, loader, optimizer, criterion, device, train: bool):
+def run_epoch(model, loader, optimizer, criterion, device, train: bool, desc: str = ""):
     model.train(mode=train)
     total_loss = 0.0
     total_weight = 0.0
     all_targets, all_preds, all_weights = [], [], []
 
-    for batch in loader:
+    # Barra de progresso por batch -- sem isso, uma época que demora (I/O de
+    # DICOM lido do dataset montado no Kaggle pode ser bem mais lento que o
+    # cache local) fica sem nenhum sinal de vida nos logs até terminar.
+    pbar = tqdm(loader, desc=desc, leave=False)
+    for batch in pbar:
         image = batch["image"].to(device)
         targets = batch["targets"].to(device)
         weights = batch["target_weights"].to(device)
@@ -88,6 +93,7 @@ def run_epoch(model, loader, optimizer, criterion, device, train: bool):
         all_targets.append(targets.detach().cpu().numpy())
         all_preds.append(torch.sigmoid(logits).detach().cpu().numpy())
         all_weights.append(weights.detach().cpu().numpy())
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
 
     avg_loss = total_loss / total_weight
     y_true = np.concatenate(all_targets)
@@ -219,10 +225,12 @@ def main():
 
     for epoch in range(args.epochs):
         train_loss, train_auc, _ = run_epoch(
-            model, train_loader, optimizer, criterion, device, train=True
+            model, train_loader, optimizer, criterion, device, train=True,
+            desc=f"epoch {epoch+1}/{args.epochs} [train]",
         )
         val_loss, val_auc, val_per_label = run_epoch(
-            model, val_loader, optimizer, criterion, device, train=False
+            model, val_loader, optimizer, criterion, device, train=False,
+            desc=f"epoch {epoch+1}/{args.epochs} [val]",
         )
 
         print(
