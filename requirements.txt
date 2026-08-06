@@ -24,9 +24,6 @@ timm
 # pacote pip: iterative-stratification / módulo python: iterstrat
 iterative-stratification
 
-# Texto (relatórios de laudo)
-transformers
-
 # Kaggle
 kaggle
 

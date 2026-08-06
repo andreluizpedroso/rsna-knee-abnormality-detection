@@ -15,11 +15,10 @@ from torch.utils.data import DataLoader
 
 import numpy as np
 import pandas as pd
-from transformers import AutoTokenizer
 
 from . import config
 from .dataset import KneeDataset
-from .model import MultimodalKneeModel
+from .model import KneeModel
 
 
 def main():
@@ -30,14 +29,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ATENÇÃO: test.csv só tem StudyInstanceUID (sem coluna Report) -- o
-    # texto do laudo não está disponível no teste. Se o modelo treinado
-    # depende fortemente do texto, isso é um mismatch treino/teste real.
-    # Ver nota em CLAUDE.md.
     test_df = pd.read_csv(config.TEST_CSV)
-    tokenizer = AutoTokenizer.from_pretrained(config.TEXT_MODEL)
     test_ds = KneeDataset(
-        test_df, config.TEST_SERIES_DIR, tokenizer, is_train=False,
+        test_df, config.TEST_SERIES_DIR, is_train=False,
         series_csv=config.TEST_SERIES_CSV,
     )
     test_loader = DataLoader(
@@ -45,7 +39,7 @@ def main():
         num_workers=config.NUM_WORKERS,
     )
 
-    model = MultimodalKneeModel().to(device)
+    model = KneeModel().to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 
@@ -55,10 +49,8 @@ def main():
     with torch.no_grad():
         for batch in test_loader:
             image = batch["image"].to(device)
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
 
-            logits = model(image, input_ids, attention_mask)
+            logits = model(image)
             preds = torch.sigmoid(logits).cpu().numpy()
 
             study_ids.extend(batch["study_id"])

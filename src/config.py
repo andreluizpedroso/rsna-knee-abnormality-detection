@@ -78,7 +78,6 @@ LR = 3e-4
 WEIGHT_DECAY = 1e-2
 EPOCHS = 10
 IMAGE_BACKBONE = "resnet50"   # timm model name; trocar por algo maior depois
-TEXT_MODEL = "distilbert-base-multilingual-cased"  # laudos vêm em vários idiomas
 
 # Peso no BCE loss dos exemplos com pseudo-label (weak supervision via
 # src/weak_supervision.py) em relação aos 58 exemplos com label real (peso

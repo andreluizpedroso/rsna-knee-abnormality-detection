@@ -1,5 +1,10 @@
 """
-Dataset multimodal (imagem + texto do laudo) para o desafio RSNA Knee.
+Dataset (imagem) para o desafio RSNA Knee.
+
+Modelo final é image-only (ver model.py) -- o texto do laudo (Report) só é
+usado como weak supervision para gerar pseudo-labels (weak_supervision.py),
+nunca como input do modelo: ele não existe em test.csv, então dependeria de
+um sinal ausente no teste. Este Dataset não carrega/tokeniza o Report.
 
 Cada STUDY (StudyInstanceUID) tem várias SÉRIES (SeriesInstanceUID), e cada
 série tem 20-45 slices DICOM. Isso é bem mais complexo que "uma imagem por
@@ -132,7 +137,6 @@ class KneeDataset(Dataset):
     """
     Espera um DataFrame com pelo menos:
       - config.ID_COLUMN (StudyInstanceUID)
-      - config.TEXT_COLUMN (Report) -- pode ser vazio/NaN
       - config.TARGET_COLUMNS -- presentes só se `is_train=True`
     """
 
@@ -140,16 +144,12 @@ class KneeDataset(Dataset):
         self,
         df: pd.DataFrame,
         series_dir: Path,
-        tokenizer=None,
         is_train: bool = True,
-        max_text_len: int = 256,
         series_csv: Path | None = None,
     ):
         self.df = df.reset_index(drop=True)
         self.series_dir = Path(series_dir)
-        self.tokenizer = tokenizer
         self.is_train = is_train
-        self.max_text_len = max_text_len
         # train_series.csv/test_series.csv (Anatomical_Plane, Fluid_Sensitive)
         # para escolher a série sagital fluid-sensitive em vez da primeira
         # série disponível. Sem isso, cai de volta pra ordem alfabética.
@@ -165,30 +165,13 @@ class KneeDataset(Dataset):
         study_dir = self.series_dir / str(study_id)
         image = torch.from_numpy(load_study_image(study_dir, study_id, self.series_df))
 
-        text = str(row.get(config.TEXT_COLUMN, "") or "")
-        if self.tokenizer is not None:
-            enc = self.tokenizer(
-                text,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_text_len,
-                return_tensors="pt",
-            )
-            input_ids = enc["input_ids"].squeeze(0)
-            attention_mask = enc["attention_mask"].squeeze(0)
-        else:
-            input_ids = torch.zeros(self.max_text_len, dtype=torch.long)
-            attention_mask = torch.zeros(self.max_text_len, dtype=torch.long)
-
         item = {
             "study_id": study_id,
             "image": image,
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
         }
 
         if self.is_train:
-            targets = row[config.TARGET_COLUMNS].fillna(0.0).values.astype(np.float32)
+            targets = row[config.TARGET_COLUMNS].astype(np.float64).fillna(0.0).values.astype(np.float32)
             item["targets"] = torch.from_numpy(targets)
 
             weight_cols = [f"{c}{WEIGHT_COLUMN_SUFFIX}" for c in config.TARGET_COLUMNS]

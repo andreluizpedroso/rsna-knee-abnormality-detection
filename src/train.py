@@ -21,11 +21,10 @@ import numpy as np
 import pandas as pd
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 from sklearn.metrics import roc_auc_score
-from transformers import AutoTokenizer
 
 from . import config
 from .dataset import KneeDataset, attach_label_weights
-from .model import MultimodalKneeModel
+from .model import KneeModel
 from .weak_supervision import generate_pseudo_labels
 
 
@@ -67,13 +66,11 @@ def run_epoch(model, loader, optimizer, criterion, device, train: bool):
 
     for batch in loader:
         image = batch["image"].to(device)
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
         targets = batch["targets"].to(device)
         weights = batch["target_weights"].to(device)
 
         with torch.set_grad_enabled(train):
-            logits = model(image, input_ids, attention_mask)
+            logits = model(image)
             # reduction='none' + peso por elemento -- pseudo-labels (weak
             # supervision) pesam config.PSEUDO_LABEL_WEIGHT, labels reais
             # pesam 1.0, e células sem sinal (weight 0) não contribuem.
@@ -182,8 +179,6 @@ def main():
         train_gold_df = gold_df[gold_df["fold"] != fold].reset_index(drop=True)
         val_df = gold_df[gold_df["fold"] == fold].reset_index(drop=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(config.TEXT_MODEL)
-
     train_df = pd.concat(
         [
             attach_label_weights(train_gold_df, weight=1.0),
@@ -194,11 +189,11 @@ def main():
     val_df = attach_label_weights(val_df, weight=1.0)
 
     train_ds = KneeDataset(
-        train_df, config.TRAIN_SERIES_DIR, tokenizer, is_train=True,
+        train_df, config.TRAIN_SERIES_DIR, is_train=True,
         series_csv=config.TRAIN_SERIES_CSV,
     )
     val_ds = KneeDataset(
-        val_df, config.TRAIN_SERIES_DIR, tokenizer, is_train=True,
+        val_df, config.TRAIN_SERIES_DIR, is_train=True,
         series_csv=config.TRAIN_SERIES_CSV,
     )
 
@@ -211,7 +206,7 @@ def main():
         num_workers=config.NUM_WORKERS, pin_memory=True,
     )
 
-    model = MultimodalKneeModel().to(device)
+    model = KneeModel().to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY
     )

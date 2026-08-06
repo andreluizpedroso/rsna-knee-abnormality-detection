@@ -1,7 +1,7 @@
 # RSNA Knee Abnormality Detection
 
-Modelo multimodal (MRI + laudo radiológico) para detectar 12 anormalidades
-clinicamente relevantes no joelho, desenvolvido para a competição Kaggle
+Modelo de visão computacional para detectar 12 anormalidades clinicamente
+relevantes no joelho a partir de MRI, desenvolvido para a competição Kaggle
 [RSNA Knee Abnormality Detection](https://www.kaggle.com/competitions/rsna-knee-abnormality-detection).
 
 ## O desafio
@@ -27,9 +27,9 @@ clinicamente relevantes no joelho, desenvolvido para a competição Kaggle
   `Anatomical_Plane`, `Fluid_Sensitive`, `Fat_Suppression`) — cada estudo tem
   em média ~5.5 séries.
 - `Report`: texto livre do laudo radiológico, multi-idioma, presente em
-  100% dos estudos de treino. **Não existe na base de teste** — só pode ser
-  usado para gerar/checar labels adicionais no treino (weak supervision),
-  não como input direto do modelo em produção.
+  100% dos estudos de treino. **Não existe na base de teste** — por isso é
+  usado só para gerar/checar labels adicionais no treino (weak supervision),
+  nunca como input do modelo.
 - Dataset completo: 819.640 arquivos DICOM, 569.76 GB.
 
 ## Abordagem
@@ -52,9 +52,11 @@ clinicamente relevantes no joelho, desenvolvido para a competição Kaggle
    classes (algumas com poucos exemplos positivos), o split usa
    `MultilabelStratifiedKFold` em vez de k-fold simples, para manter a
    proporção de cada classe em cada fold.
-5. **Modelo baseline**: encoder de imagem (CNN pré-treinada) + encoder de
-   texto (transformer multilíngue), com fusão por concatenação antes da
-   cabeça de classificação final.
+5. **Modelo baseline (image-only)**: CNN pré-treinada como encoder de
+   imagem + cabeça de classificação para as 12 classes. O texto do laudo
+   não entra como input do modelo — só é usado na etapa de weak supervision
+   (item 2), evitando o mismatch treino/teste causado pela ausência do
+   `Report` na base de teste.
 
 ## Estrutura do projeto
 
@@ -64,8 +66,8 @@ notebooks/
   01_eda.ipynb          # exploração inicial dos dados
 src/
   config.py              # paths, colunas e hiperparâmetros centralizados
-  dataset.py              # dataset multimodal + seleção de série
-  model.py                 # modelo baseline (imagem + texto)
+  dataset.py              # dataset de imagem + seleção de série
+  model.py                 # modelo baseline image-only
   train.py                  # loop de treino com validação estratificada
   weak_supervision.py        # geração de pseudo-labels a partir do Report
   infer.py                    # geração da submissão
