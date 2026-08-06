@@ -1,0 +1,16 @@
+data/
+submissions/*.csv
+*.pyc
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+venv/
+*.pth
+*.ckpt
+.env
+kaggle.json
+.DS_Store
+
+# Notas de desenvolvimento internas -- não fazem parte do repositório público
+CLAUDE.md
+PROGRESS.md

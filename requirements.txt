@@ -1,0 +1,36 @@
+# Core
+numpy
+pandas
+scikit-learn
+pyyaml
+tqdm
+
+# Imaging
+pydicom
+opencv-python-headless
+pillow
+
+# Deep learning
+# CPU-only por padrão para desenvolvimento local (evita erro de DLL do
+# c10.dll com builds CUDA em máquinas sem GPU/driver compatível):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# No Kaggle Notebook (GPU), instalar a build CUDA normalmente.
+torch
+torchvision
+timm
+
+# Validação estratificada multi-label (só 58 estudos com label completo,
+# MCL com 9 positivos -- StratifiedKFold comum não lida com multi-label)
+# pacote pip: iterative-stratification / módulo python: iterstrat
+iterative-stratification
+
+# Texto (relatórios de laudo)
+transformers
+
+# Kaggle
+kaggle
+
+# Notebook/EDA
+matplotlib
+seaborn
+jupyter
