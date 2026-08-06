@@ -37,9 +37,23 @@ StudyInstanceUID, sem risco de vazamento entre folds.
 
 from pathlib import Path
 
+COMPETITION_SLUG = "rsna-knee-abnormality-detection"
+
 # --- Paths -------------------------------------------------------------
-ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT_DIR / "data"
+# Kaggle Notebooks sempre têm /kaggle/input montado (mesmo sem internet) --
+# é o jeito mais confiável de detectar o ambiente sem depender de variável
+# de ambiente específica. Localmente, os dados vêm de scripts/download_data.sh
+# em <raiz do repo>/data/; no Kaggle, a competição já vem montada em
+# /kaggle/input/<slug>/ e só /kaggle/working/ é gravável.
+IS_KAGGLE = Path("/kaggle/input").exists()
+
+if IS_KAGGLE:
+    DATA_DIR = Path("/kaggle/input") / COMPETITION_SLUG
+    WORKING_DIR = Path("/kaggle/working")
+else:
+    ROOT_DIR = Path(__file__).resolve().parent.parent
+    DATA_DIR = ROOT_DIR / "data"
+    WORKING_DIR = ROOT_DIR
 
 TRAIN_CSV = DATA_DIR / "train.csv"
 TRAIN_SERIES_CSV = DATA_DIR / "train_series.csv"
@@ -50,8 +64,8 @@ SAMPLE_SUB_CSV = DATA_DIR / "sample_submission.csv"
 TRAIN_SERIES_DIR = DATA_DIR / "train_series"  # <StudyInstanceUID>/<SeriesInstanceUID>/*.dcm
 TEST_SERIES_DIR = DATA_DIR / "test_series"
 
-SUBMISSIONS_DIR = ROOT_DIR / "submissions"
-CHECKPOINT_DIR = ROOT_DIR / "checkpoints"
+SUBMISSIONS_DIR = WORKING_DIR / "submissions"
+CHECKPOINT_DIR = WORKING_DIR / "checkpoints"
 
 # --- Labels --------------------------------------------------------------
 TARGET_COLUMNS = [
