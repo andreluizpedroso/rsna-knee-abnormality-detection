@@ -39,7 +39,10 @@ def main():
         num_workers=config.NUM_WORKERS,
     )
 
-    model = KneeModel().to(device)
+    # pretrained=False: os pesos vêm todos do checkpoint carregado logo
+    # abaixo, então baixar o ImageNet pré-treinado do timm seria só
+    # desperdício de rede -- e a submissão roda sem internet mesmo.
+    model = KneeModel(pretrained=False).to(device)
     model.load_state_dict(torch.load(args.checkpoint, map_location=device))
     model.eval()
 
