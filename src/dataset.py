@@ -14,7 +14,10 @@ rodando rápido:
     1 estudo -> escolhe 1 série (a sagital fluid-sensitive, via
     train_series.csv/test_series.csv -- ver select_preferred_series_id;
     cai de volta para a primeira série em ordem alfabética se não achar)
-    -> pega o slice do meio dessa série -> 1 imagem 2D.
+    -> pega o slice do meio dessa série -> 1 imagem 2D -> normaliza o lado
+    do joelho (ver compute_laterality/CANONICAL_LATERALITY abaixo, pros 4
+    labels medial/lateral fazerem sentido de forma consistente entre
+    estudos de joelho esquerdo e direito).
 
 Isso definitivamente deixa sinal na mesa (ignora as outras séries e todos os
 outros slices). Depois que o baseline estiver validado, vale evoluir para:
@@ -43,13 +46,82 @@ import pandas as pd
 from . import config
 
 
+# Lado escolhido como referência -- séries do lado oposto são espelhadas
+# horizontalmente (ver load_dicom_slice) pra normalizar o eixo
+# medial-lateral. 4 dos 12 labels (Medial/Lateral Meniscus, Medial/Lateral
+# OA) só fazem sentido em relação a um lado fixo do joelho; sem essa
+# normalização, joelho esquerdo e direito têm o eixo medial-lateral
+# espelhado um em relação ao outro, e o modelo aprenderia esses 4 labels a
+# partir de um eixo invertido em ~metade dos estudos.
+CANONICAL_LATERALITY = "R"
+
+
+def compute_laterality(ds) -> str | None:
+    """Determina o lado do joelho ('L' ou 'R') a partir da GEOMETRIA DICOM
+    (ImagePositionPatient + ImageOrientationPatient), não da tag
+    `Laterality` (0020,0060) diretamente -- essa tag é opcional no padrão
+    DICOM e fica ausente/vazia em boa parte dos estudos (2 dos 5 estudos
+    de smoke test locais, por exemplo); tratar ausência como um lado fixo
+    por padrão espelharia silenciosamente metade dos estudos do lado
+    oposto. A convenção de coordenadas do paciente do DICOM (LPS) tem X
+    positivo apontando pro lado ESQUERDO do paciente -- então o sinal do X
+    do centro da imagem (calculado a partir da geometria, não só do canto
+    IPP) indica o lado. Validado contra a tag Laterality nos estudos locais
+    onde ambas estão disponíveis (bateu 100% -- ver PROGRESS.md).
+
+    Cai de volta pra tag `Laterality` só quando a geometria não está
+    disponível (raro -- IPP/IOP são campos praticamente sempre presentes
+    em MRI). Retorna None (abstenção -- não espelha) se nenhuma das duas
+    fontes permitir decidir."""
+    try:
+        ipp = np.array([float(v) for v in ds.ImagePositionPatient])
+        iop = [float(v) for v in ds.ImageOrientationPatient]
+        rows, cols = int(ds.Rows), int(ds.Columns)
+        px_spacing = [float(v) for v in ds.PixelSpacing]  # [row_spacing, col_spacing]
+        row_vec = np.array(iop[0:3])  # direção ao longo de uma LINHA (índice de coluna crescente)
+        col_vec = np.array(iop[3:6])  # direção ao longo de uma COLUNA (índice de linha crescente)
+        center_x = (
+            ipp + (cols / 2) * px_spacing[1] * row_vec + (rows / 2) * px_spacing[0] * col_vec
+        )[0]
+        if center_x > 0:
+            return "L"
+        if center_x < 0:
+            return "R"
+        # center_x == 0 (raríssimo, exatamente na linha média) -- ambíguo,
+        # cai pro fallback abaixo.
+    except (AttributeError, TypeError, ValueError, IndexError):
+        pass
+
+    laterality = getattr(ds, "Laterality", None)
+    return laterality if laterality in ("L", "R") else None
+
+
 def load_dicom_slice(path: Path) -> np.ndarray:
-    """Carrega um único slice DICOM como array float32 normalizado em [0,1]."""
+    """Carrega um único slice DICOM como array float32 normalizado em [0,1].
+    Espelha horizontalmente se o lado do joelho (ver compute_laterality) não
+    for o CANONICAL_LATERALITY -- ver comentário acima da constante.
+
+    Nota: essa normalização corrige diretamente o eixo medial-lateral em
+    séries CORONAIS/AXIAIS, onde esquerda-direita na imagem 2D corresponde
+    a medial-lateral anatômico. Em séries SAGITAIS (as priorizadas por
+    select_preferred_series_id hoje), esquerda-direita na imagem 2D
+    corresponde a anterior-posterior, não a medial-lateral -- pra essas, o
+    espelhamento troca o enquadramento anterior/posterior em vez de
+    corrigir medial/lateral. Ainda assim aplicamos de forma consistente
+    (não condicionamos ao plano) porque: (1) é inofensivo pra sagital
+    (segue sendo anatomia válida, só com A/P trocado) e (2) já deixa o
+    pipeline correto pra quando series coronais/axiais entrarem em uso
+    (fallback atual, ou uma evolução futura multi-plano)."""
     import pydicom
     ds = pydicom.dcmread(str(path))
     img = ds.pixel_array.astype(np.float32)
     rng = img.max() - img.min()
     img = (img - img.min()) / (rng + 1e-6)
+
+    side = compute_laterality(ds)
+    if side is not None and side != CANONICAL_LATERALITY:
+        img = np.ascontiguousarray(img[:, ::-1])
+
     img = cv2.resize(img, (config.IMAGE_SIZE, config.IMAGE_SIZE))
     return img
 
