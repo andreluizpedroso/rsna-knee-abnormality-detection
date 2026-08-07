@@ -48,7 +48,21 @@ COMPETITION_SLUG = "rsna-knee-abnormality-detection"
 IS_KAGGLE = Path("/kaggle/input").exists()
 
 if IS_KAGGLE:
-    DATA_DIR = Path("/kaggle/input") / COMPETITION_SLUG
+    # O caminho de montagem varia conforme como a competição foi anexada:
+    # kernels criados via API (kagglesdk) montam em
+    # /kaggle/input/competitions/<slug>/, já o fluxo clássico "Add Data" pela
+    # UI monta direto em /kaggle/input/<slug>/. Testa os candidatos nessa
+    # ordem e usa o primeiro que já tiver train.csv; se nenhum tiver (ainda
+    # não anexado), cai no path clássico -- o erro de arquivo não encontrado
+    # fica claro de qualquer forma.
+    _KAGGLE_DATA_CANDIDATES = [
+        Path("/kaggle/input/competitions") / COMPETITION_SLUG,
+        Path("/kaggle/input") / COMPETITION_SLUG,
+    ]
+    DATA_DIR = next(
+        (p for p in _KAGGLE_DATA_CANDIDATES if (p / "train.csv").exists()),
+        _KAGGLE_DATA_CANDIDATES[-1],
+    )
     WORKING_DIR = Path("/kaggle/working")
 else:
     ROOT_DIR = Path(__file__).resolve().parent.parent
