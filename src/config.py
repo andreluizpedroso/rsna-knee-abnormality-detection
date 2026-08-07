@@ -105,7 +105,14 @@ N_FOLDS = 3
 IMAGE_SIZE = 392
 BATCH_SIZE = 16
 NUM_WORKERS = 4
-LR = 3e-4
+LR = 3e-4   # usada pra head sempre; pra backbone CNN também (fine-tuning de CNN tolera LR mais alta)
+# LR bem menor só pro backbone quando IMAGE_BACKBONE é DINOv2 (ver
+# train.py) -- fine-tuning de ViT pré-treinado com a mesma LR da head
+# (3e-4) destrói os pesos pré-treinados nas primeiras batches; o primeiro
+# treino real com DINOv2 ficou com train_auc travado em ~0.50 (ruído) por
+# 10 épocas inteiras nos 3 folds por causa disso (ver PROGRESS.md). Valor
+# inspirado no notebook público "DINOsaur V2" (LR_BACKBONE=9e-6).
+DINOV2_BACKBONE_LR = 1e-5
 WEIGHT_DECAY = 1e-2
 EPOCHS = 10
 

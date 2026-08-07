@@ -167,9 +167,24 @@ def train_one_fold(
     )
 
     model = KneeModel().to(device)
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY
-    )
+    # Backbones DINOv2 (ViT pré-treinado) precisam de LR bem menor pro
+    # backbone que pra head recém-inicializada -- LR=config.LR uniforme
+    # (calibrado pro resnet50) destruiu os pesos pré-treinados nas
+    # primeiras batches: train_auc ficou travado em ~0.50 (ruído) por 10
+    # épocas inteiras no primeiro treino real com DINOv2 (ver PROGRESS.md).
+    # CNNs fine-tunam bem com uma LR única; ViT não.
+    if "dinov2" in config.IMAGE_BACKBONE:
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": model.backbone.parameters(), "lr": config.DINOV2_BACKBONE_LR},
+                {"params": model.head.parameters(), "lr": config.LR},
+            ],
+            weight_decay=config.WEIGHT_DECAY,
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=config.LR, weight_decay=config.WEIGHT_DECAY
+        )
     # reduction='none': a agregação ponderada (peso por elemento) acontece
     # em run_epoch, não aqui.
     criterion = nn.BCEWithLogitsLoss(reduction="none")
