@@ -10,45 +10,21 @@ francês, português observados na amostra) e não há dados anotados
 suficientes (só 58 estudos) para treinar um classificador de texto
 confiável. Para cada label:
 
-  - Labels "autoevidentes com magnitude" (Effusion, Synovitis, Baker's):
-    o organizador da competição publicou os critérios clínicos usados pelos
-    radiologistas para montar o gold set -- só conta como positivo achado
-    de magnitude MODERADA OU GRANDE; derrame/cisto/sinovite pequeno, mínimo
-    ou traço é negativo (mesmo estando presente). Termo sem nenhum
-    qualificador de magnitude por perto mantém o comportamento antigo
-    (positivo) para não sacrificar recall à toa -- só o caso claramente
-    pequeno/mínimo virou negativo.
-  - Labels "autoevidente simples" (Contusion): o próprio termo já é o
-    achado (edema de medula óssea por impacto).
-  - Fracture: "autoevidente com gate de cronicidade" -- só conta como
-    achado (a competição pede fratura AGUDA) se não houver qualificador de
-    cronicidade por perto ("old fracture", "healed", "consolidada" etc.);
-    caindo nesse caso vira negativo, não abstenção, porque o próprio termo
-    "fracture" está presente, só que descrevendo algo antigo/consolidado.
-  - Ligamentos (ACL, MCL): só positivo com termo de ruptura de ALTO GRAU
-    ("complete tear", "rotura completa", "discontinuity" etc.) por perto do
-    termo de anatomia; termo de gravidade leve/ambígua por perto ("sprain",
-    "partial tear", "degenerative", "esguince" etc.) vira negativo (o
-    critério oficial trata achado ambíguo como negativo, não como
-    abstenção); nem um nem outro (só o nome do ligamento, sem qualificador
-    de gravidade) fica em NaN -- não há como saber.
-  - Meniscos (Medial/Lateral Meniscus): só positivo se o sinal alcança
-    claramente a superfície articular ou há fragmento deslocado/truncado
-    por perto do termo de anatomia; termo de degeneração intrassubstancial
-    sem extensão à superfície vira negativo; nem um nem outro fica em NaN.
-  - OA (Medial/Lateral/PF OA): só positivo com termo de perda de cartilagem
-    de ALTO GRAU ("severe", "bone-on-bone", "grade 4" etc.) por perto;
-    termo de OA leve/inicial vira negativo; menção genérica de
-    "osteoarthritis"/"degenerative changes" sem grau explícito fica em NaN
-    (não dá pra saber se é leve ou grave só pelo termo genérico).
+  - Labels "autoevidentes" (Effusion, Synovitis, Baker's, Contusion,
+    Fracture): o próprio termo da anatomia/achado já é o achado. Positivo se
+    o termo aparece sem negação próxima; negativo se aparece negado
+    ("no fracture", "sin derrame", "kein Erguss"); NaN (abstenção) se o termo
+    nem aparece no laudo.
+  - Labels "compostas" (ACL, MCL, Medial/Lateral Meniscus, Medial/Lateral/PF
+    OA): precisam de um termo de anatomia (ex.: "menisco medial") E um termo
+    de patologia próximo (ex.: "rotura", "tear") para virar positivo; termo
+    de anatomia com termo de normalidade próximo ("intact", "íntegro") vira
+    negativo; anatomia mencionada sem nenhum dos dois fica em NaN.
 
 Isso é deliberadamente conservador: preferimos abster (NaN, sem pseudo-label)
-a inventar um label errado quando o laudo não dá indício de gravidade
-nenhum. Quando o laudo DÁ um indício de gravidade (mesmo que leve/ambíguo),
-seguimos o mesmo critério do gold set: ambíguo = negativo. Use
-`evaluate_against_gold` para checar a qualidade das regras contra os 58
-estudos que já têm label verdadeiro antes de confiar nas pseudo-labels dos
-demais.
+a inventar um label errado. Use `evaluate_against_gold` para checar a
+qualidade das regras contra os 58 estudos que já têm label verdadeiro antes
+de confiar nas pseudo-labels dos demais.
 """
 
 import re
@@ -59,11 +35,7 @@ import pandas as pd
 
 from . import config
 
-WINDOW_CHARS = 60  # janela de contexto (chars) ao redor do termo de anatomia --
-# alargada de 40 pra 60 ao introduzir termos de gravidade multi-palavra
-# (ex.: "complete discontinuity of the fibers"), que às vezes ficam um
-# pouco mais longe do termo de anatomia do que os termos de negação curtos
-# usados antes.
+WINDOW_CHARS = 40  # janela de contexto (chars) ao redor do termo de anatomia
 
 # --- Termos de anatomia/achado por label (já sem acento, minúsculo) --------
 ANATOMY_PATTERNS = {
@@ -116,23 +88,9 @@ ANATOMY_PATTERNS = {
 }
 
 # Labels cujo próprio termo de anatomia já é o achado (não precisam de um
-# termo de patologia separado por perto -- só checam negação). Effusion,
-# Synovitis e Baker's também checam magnitude (ver MODERATE_LARGE_TERMS/
-# SMALL_TERMS) e Fracture checa cronicidade (ver CHRONIC_TERMS) -- ambos
-# tratados como uma etapa extra em cima da lógica "autoevidente" abaixo.
+# termo de patologia separado por perto -- só checam negação).
 SELF_EVIDENT_LABELS = {"Effusion", "Synovitis", "Baker's", "Contusion", "Fracture"}
 
-# Dessas, exige-se magnitude MODERADA OU GRANDE pra contar como achado
-# clinicamente positivo (critério oficial do gold set) -- pequeno/mínimo/
-# traço é negativo mesmo estando presente.
-MAGNITUDE_GATED_LABELS = {"Effusion", "Synovitis", "Baker's"}
-
-# Só Fracture precisa do gate de cronicidade (a competição só conta fratura
-# AGUDA -- uma fratura antiga/consolidada mencionada no laudo não conta).
-CHRONIC_GATED_LABELS = {"Fracture"}
-
-LIGAMENT_LABELS = {"ACL", "MCL"}
-MENISCUS_LABELS = {"Medial Meniscus", "Lateral Meniscus"}
 OA_LABELS = {"Medial OA", "Lateral OA", "PF OA"}
 
 # Excluídas da geração de pseudo-labels: o gold set (58 estudos) tem pouca
@@ -143,121 +101,17 @@ OA_LABELS = {"Medial OA", "Lateral OA", "PF OA"}
 # seja revisitado depois.
 EXCLUDED_FROM_PSEUDO_LABELS = {"Lateral OA", "PF OA"}
 
-# --- Termos de GRAVIDADE ALTA (só esses viram positivo) ---------------------
-# Critério oficial do gold set: ACL/MCL só positivo com ruptura de alto grau
-# (>50% das fibras ou descontinuidade completa); qualquer coisa mais leve é
-# negativo por definição.
-LIGAMENT_HIGH_GRADE_TERMS = [
-    "complete tear", "full tear", "full-thickness tear", "complete rupture",
-    "complete disruption", "full-thickness disruption", "high-grade tear",
-    "high grade tear", "grade 3", "grade iii", "discontinuity",
-    "disrupted fibers", "torn fibers", "fiber discontinuity",
-    "rotura completa", "ruptura completa", "rotura total", "ruptura total",
-    "discontinuidad", "alto grado", "grado alto", "grado iii",
-    "ruptura de alto grado", "rotura de alto grado",
-    "rupture complete", "rupture totale", "haut grade", "discontinuite",
-    "kompletter riss", "vollstandiger riss", "hochgradig", "diskontinuitat",
+OA_TERMS = [
+    "osteoarthritis", "degenerative", "chondral loss", "cartilage loss",
+    "osteophyte", "artrosis", "cambios degenerativos", "arthrose",
+    "chondropathie", "chondropathy", "gonarthrose", "artrose",
+    "joint space narrowing", "pinzamiento articular",
 ]
 
-# Termos de gravidade LEVE/AMBÍGUA -- por critério oficial, isso é negativo
-# (não abstenção), porque o laudo já deu um indício de gravidade e esse
-# indício é insuficiente pro corte oficial.
-LIGAMENT_MILD_TERMS = [
-    "sprain", "strain", "partial tear", "partial-thickness tear",
-    "low-grade", "low grade", "grade 1", "grade i", "grade 2", "grade ii",
-    "mild", "chronic", "degenerative", "degeneration", "thickening",
-    "signal change", "intrasubstance", "mucoid degeneration", "chondromalacia",
-    "esguince", "rotura parcial", "bajo grado", "grado i", "grado ii",
-    "cronico", "cronica", "degeneracion", "engrosamiento",
-    "entorse", "dechirure partielle", "bas grade", "chronique",
-    "degeneratif", "epaississement",
-    "teilriss", "niedriggradig", "chronisch", "degenerativ", "verdickung",
-]
-
-# Critério oficial: menisco só positivo se o sinal atinge a superfície
-# articular (>=2 imagens) ou há fragmento deslocado/truncado.
-MENISCUS_SURFACE_TERMS = [
-    "extends to the articular surface", "extending to the articular surface",
-    "extends to the surface", "extending to the surface",
-    "reaches the surface", "surface extension", "articular surface",
-    "displaced fragment", "displaced meniscal fragment", "truncated",
-    "bucket-handle", "bucket handle", "flap tear extending",
-    "extendida a la superficie articular", "extendida a la superficie",
-    "superficie articular", "fragmento desplazado", "fragmento luxado",
-    "asa de cubo",
-    "surface articulaire", "fragment deplace", "anse de seau",
-    "gelenkflache", "verlagertes fragment", "korbhenkel",
-]
-
-# Degeneração intrassubstancial / sinal sem chegar na superfície -- por
-# critério oficial isso é negativo.
-MENISCUS_MILD_TERMS = [
-    "intrasubstance", "intrasubstance signal", "mucoid degeneration",
-    "degenerative signal", "degenerative change", "signal change",
-    "does not extend to the surface", "not extend to the articular surface",
-    "no extend", "grade 1 signal", "grade i signal", "grade 2 signal",
-    "grade ii signal",
-    "degeneracion intrasustancial", "senal degenerativa", "no se extiende",
-    "signal intrasubstantiel", "degenerescence mucoide",
-    "intrasubstanzielles signal", "degeneratives signal",
-]
-
-# Critério oficial: OA só positivo com perda de cartilagem de alto grau
-# (>50% da espessura, área >=1cm).
-OA_HIGH_GRADE_TERMS = [
-    "full-thickness cartilage loss", "full thickness cartilage loss",
-    "high-grade cartilage loss", "high grade cartilage loss",
-    "severe cartilage loss", "bone-on-bone", "bone on bone",
-    "grade 4", "grade iv", "extensive cartilage loss",
-    "advanced osteoarthritis", "severe osteoarthritis",
-    "perdida de cartilago de alto grado", "artrosis severa",
-    "artrosis avanzada", "hueso con hueso", "grado iv",
-    "perte de cartilage severe", "arthrose severe", "arthrose avancee",
-    "os contre os",
-    "schwerer knorpelverlust", "fortgeschrittene arthrose",
-    "hochgradiger knorpelverlust",
-]
-
-OA_MILD_TERMS = [
-    "mild osteoarthritis", "mild degenerative", "early osteoarthritis",
-    "mild cartilage loss", "chondromalacia", "small osteophyte",
-    "grade 1", "grade i", "grade 2", "grade ii",
-    "artrosis leve", "cambios degenerativos leves", "osteofito pequeno",
-    "arthrose legere", "arthrose debutante",
-    "leichte arthrose", "beginnende arthrose",
-]
-
-# --- Magnitude (Effusion/Synovitis/Baker's) ---------------------------------
-MODERATE_LARGE_TERMS = [
-    "moderate effusion", "large effusion", "moderate to large",
-    "moderate-to-large", "large to moderate", "significant effusion",
-    "moderate to severe", "moderate synovitis", "severe synovitis",
-    "moderate cyst", "large cyst",
-    "derrame moderado", "derrame grande", "derrame moderado a grande",
-    "quiste moderado", "quiste grande",
-    "epanchement modere", "epanchement important", "epanchement abondant",
-    "kyste moderee", "kyste important",
-    "massiger erguss", "grosser erguss", "deutlicher erguss",
-]
-
-SMALL_TERMS = [
-    "trace effusion", "small effusion", "minimal effusion", "tiny effusion",
-    "physiologic amount", "physiological amount", "trace synovitis",
-    "mild synovitis", "minimal synovitis", "small cyst", "trace cyst",
-    "derrame minimo", "derrame pequeno", "escaso derrame",
-    "sinovitis leve", "sinovitis minima", "quiste pequeno",
-    "epanchement minime", "epanchement discret", "epanchement physiologique",
-    "synovite legere", "kyste minime",
-    "geringer erguss", "minimaler erguss", "physiologische menge",
-]
-
-# --- Cronicidade (Fracture) --------------------------------------------------
-CHRONIC_TERMS = [
-    "old fracture", "healed fracture", "chronic fracture", "remote fracture",
-    "consolidated fracture", "healing fracture", "prior fracture",
-    "fractura antigua", "fractura consolidada", "fractura previa",
-    "fracture ancienne", "fracture consolidee", "fracture anterieure",
-    "alte fraktur", "verheilte fraktur", "konsolidierte fraktur",
+INJURY_TERMS = [
+    "tear", "torn", "rupture", "ruptured", "sprain", "strain", "injury",
+    "lesion", "rotura", "ruptura", "esguince", "riss", "ruptur",
+    "verletzung", "dechirure", "entorse", "avulsion", "lesao",
 ]
 
 NEGATIVE_TERMS = [
@@ -285,50 +139,6 @@ def _has_any(terms: list[str], window: str) -> bool:
     return any(re.search(_word(t), window) for t in terms)
 
 
-def _vote_for_occurrence(label: str, window: str, has_neg: bool) -> int | None:
-    """Decide o voto (0/1/None=abstenção nesta ocorrência) para uma menção
-    do termo de anatomia de `label`, dado o texto ao redor (`window`) e se
-    há negação explícita por perto. Implementa o critério oficial do gold
-    set (achado ambíguo/leve = negativo, não abstenção) -- ver docstring do
-    módulo para o raciocínio por tipo de label."""
-    if has_neg:
-        return 0
-
-    if label in SELF_EVIDENT_LABELS:
-        if label in MAGNITUDE_GATED_LABELS:
-            if _has_any(MODERATE_LARGE_TERMS, window):
-                return 1
-            if _has_any(SMALL_TERMS, window):
-                return 0
-            return 1  # sem qualificador de magnitude -- mantém o comportamento antigo
-        if label in CHRONIC_GATED_LABELS:
-            return 0 if _has_any(CHRONIC_TERMS, window) else 1
-        return 1  # self-evidente simples (Contusion)
-
-    if label in LIGAMENT_LABELS:
-        if _has_any(LIGAMENT_HIGH_GRADE_TERMS, window):
-            return 1
-        if _has_any(LIGAMENT_MILD_TERMS, window):
-            return 0
-        return None
-
-    if label in MENISCUS_LABELS:
-        if _has_any(MENISCUS_SURFACE_TERMS, window):
-            return 1
-        if _has_any(MENISCUS_MILD_TERMS, window):
-            return 0
-        return None
-
-    if label in OA_LABELS:
-        if _has_any(OA_HIGH_GRADE_TERMS, window):
-            return 1
-        if _has_any(OA_MILD_TERMS, window):
-            return 0
-        return None
-
-    raise ValueError(f"label sem regra de voto definida: {label}")
-
-
 def label_report(report_text: str) -> dict[str, float]:
     """Aplica as regras de weak supervision a um único laudo e retorna um
     dict {label: 0.0/1.0/nan}. nan = abstenção (nenhuma pista suficiente)."""
@@ -339,15 +149,26 @@ def label_report(report_text: str) -> dict[str, float]:
     text = normalize_text(report_text)
 
     for label, anatomy_terms in ANATOMY_PATTERNS.items():
+        pathology_terms = None if label in SELF_EVIDENT_LABELS else (
+            OA_TERMS if label in OA_LABELS else INJURY_TERMS
+        )
+
         votes = []
         for term in anatomy_terms:
             for m in re.finditer(_word(term), text):
                 start, end = m.span()
                 window = text[max(0, start - WINDOW_CHARS): end + WINDOW_CHARS]
                 has_neg = _has_any(NEGATIVE_TERMS, window)
-                vote = _vote_for_occurrence(label, window, has_neg)
-                if vote is not None:
-                    votes.append(vote)
+
+                if pathology_terms is None:
+                    votes.append(0 if has_neg else 1)
+                else:
+                    has_pos = _has_any(pathology_terms, window)
+                    if has_pos:
+                        votes.append(1)
+                    elif has_neg:
+                        votes.append(0)
+                    # nem um nem outro -> não vota (abstenção nessa ocorrência)
 
         if votes:
             result[label] = 1.0 if max(votes) == 1 else 0.0
