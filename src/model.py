@@ -21,8 +21,15 @@ class KneeModel(nn.Module):
         dropout: float = 0.2,
     ):
         super().__init__()
+        # Backbones DINOv2 (ver config.py) são ViT com patch size 14 -- por
+        # padrão o timm exige que o input bata exatamente com o tamanho de
+        # pré-treino (518x518), então precisamos de dynamic_img_size=True
+        # pra aceitar o IMAGE_SIZE do projeto (tem que ser múltiplo de 14 --
+        # ver config.IMAGE_SIZE). Não afeta os backbones CNN (resnet etc.),
+        # que já aceitam qualquer resolução.
+        backbone_kwargs = {"dynamic_img_size": True} if "dinov2" in backbone_name else {}
         self.backbone = timm.create_model(
-            backbone_name, pretrained=pretrained, num_classes=0
+            backbone_name, pretrained=pretrained, num_classes=0, **backbone_kwargs
         )
         feat_dim = self.backbone.num_features
 

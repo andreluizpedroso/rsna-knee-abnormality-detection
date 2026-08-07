@@ -99,13 +99,30 @@ SEED = 42
 # não ter nenhum positivo de MCL. MultilabelStratifiedKFold (iterstrat) é
 # usado em vez de KFold/StratifiedKFold comum porque o problema é multi-label.
 N_FOLDS = 3
-IMAGE_SIZE = 384
+# 392 (não 384) -- múltiplo de 14, exigido pelo patch size do backbone
+# DINOv2 (ViT-S/14) abaixo. Se algum dia voltar pra um backbone CNN
+# (resnet etc.), qualquer tamanho serve; 384 era só o valor usado antes.
+IMAGE_SIZE = 392
 BATCH_SIZE = 16
 NUM_WORKERS = 4
 LR = 3e-4
 WEIGHT_DECAY = 1e-2
 EPOCHS = 10
-IMAGE_BACKBONE = "resnet50"   # timm model name; trocar por algo maior depois
+
+# DINOv2-small (ver PROGRESS.md, seção DINOv2): ViT auto-supervisionado da
+# Meta, pré-treinado em bilhões de imagens sem label -- costuma superar
+# CNNs clássicas quando há poucos exemplos rotulados pra fine-tuning,
+# exatamente nosso caso (só 58 gold). Vários notebooks públicos da
+# competição usando DINOv2 reportam publicScore 0.77-0.81, bem acima do
+# baseline resnet50 anterior (0.577). Escolhido "small" (~22M parâmetros)
+# em vez de "base" (~86M) como primeiro teste -- mais rápido de
+# treinar/rodar no Kaggle, valida mais rápido se a troca de backbone ajuda
+# antes de investir numa rodada maior de GPU no "base". O timm já registra
+# os pesos DINOv2 (baixa do HF Hub igual ao resnet50 antes -- não precisa
+# de torch.hub nem de Kaggle Model separado). model.py detecta "dinov2" no
+# nome do backbone e ativa dynamic_img_size automaticamente (exigido pra
+# aceitar IMAGE_SIZE=392 em vez do tamanho de pré-treino padrão, 518).
+IMAGE_BACKBONE = "vit_small_patch14_dinov2.lvd142m"
 
 # Peso no BCE loss dos exemplos com pseudo-label (weak supervision via
 # src/weak_supervision.py) em relação aos 58 exemplos com label real (peso
