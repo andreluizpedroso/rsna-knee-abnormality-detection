@@ -115,6 +115,11 @@ IMAGE_BACKBONE = "resnet50"   # timm model name; trocar por algo maior depois
 # célula sem pseudo-label (regra abstev) tem peso 0.
 PSEUDO_LABEL_WEIGHT = 0.3
 
+# Nº de épocas sem melhora de val_auc antes de parar o treino do fold (early
+# stopping) -- o treino do fold 0 (10 épocas, sem early stopping) mostrou
+# overfitting claro depois da época 4 (val_auc 0.6085 -> 0.5588 na época 10).
+EARLY_STOPPING_PATIENCE = 3
+
 # Quantos slices amostrar por série ao montar o exemplo de treino (ver
 # dataset.py) -- estratégia inicial simples: pega o slice do meio de cada
 # série selecionada. Revisitar depois (MIL / 2.5D / 3D) para melhor sinal.

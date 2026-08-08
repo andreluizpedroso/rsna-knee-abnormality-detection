@@ -131,60 +131,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-    set_seed()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-
-    df = pd.read_csv(config.TRAIN_CSV)
-
-    # gold_df: os 58 estudos com as 12 colunas de label REAIS preenchidas --
-    # são a única fonte de verdade pra validação. O fold (K-fold) é montado
-    # só sobre eles: cada um passa por validação em exatamente 1 dos 3 folds,
-    # nunca fica só no treino ao longo do processo.
-    gold_df = df.dropna(subset=config.TARGET_COLUMNS).reset_index(drop=True)
-    print(f"Estudos com label real: {len(gold_df)} / {len(df)}")
-
-    # pseudo_df: estudos SEM label real que ganharam ao menos 1 pseudo-label
-    # via weak supervision (Report -- ver src/weak_supervision.py). Entram
-    # SÓ no treino, nunca na validação -- a validação precisa ficar limpa
-    # (só gold) porque a precisão das regras (~0.5-0.8 contra o gold set) não
-    # é confiável o bastante pra medir o modelo.
-    pseudo_df = generate_pseudo_labels(df)
-    pseudo_df = pseudo_df[pseudo_df["is_pseudo_label"]].reset_index(drop=True)
-    print(f"Estudos com pseudo-label (só treino, peso {config.PSEUDO_LABEL_WEIGHT}): {len(pseudo_df)}")
-
-    if args.smoke_test:
-        gold_df = _filter_studies_with_local_images(gold_df)
-        pseudo_df = _filter_studies_with_local_images(pseudo_df)
-        print(f"[smoke-test] restringindo a estudos com imagem local: "
-              f"{len(gold_df)} gold, {len(pseudo_df)} pseudo")
-
-    # Cada linha de train.csv já é um StudyInstanceUID único (não há coluna
-    # de paciente), então fold direto não tem risco de vazamento. Usa
-    # MultilabelStratifiedKFold (em vez de KFold/StratifiedKFold comum) para
-    # manter a proporção das 12 classes em cada fold -- com só 58 exemplos e
-    # MCL tendo apenas 9 positivos, um split aleatório arrisca folds sem
-    # nenhum positivo de alguma classe. Com pouquíssimos exemplos (ex.:
-    # --smoke-test com só 4-5 estudos) a estratificação não faz sentido --
-    # usa um split manual simples (última linha vira validação) só pra
-    # exercitar o pipeline.
-    fold = 0  # treinar só o fold 0 no baseline; loop pelos folds depois
-    if args.smoke_test and len(gold_df) < config.N_FOLDS * 2:
-        train_gold_df = gold_df.iloc[:-1].reset_index(drop=True)
-        val_df = gold_df.iloc[-1:].reset_index(drop=True)
-    else:
-        mskf = MultilabelStratifiedKFold(
-            n_splits=config.N_FOLDS, shuffle=True, random_state=config.SEED
-        )
-        gold_df["fold"] = -1
-        y = gold_df[config.TARGET_COLUMNS].values
-        for f, (_, val_idx) in enumerate(mskf.split(gold_df, y)):
-            gold_df.loc[val_idx, "fold"] = f
-        train_gold_df = gold_df[gold_df["fold"] != fold].reset_index(drop=True)
-        val_df = gold_df[gold_df["fold"] == fold].reset_index(drop=True)
-
+def train_one_fold(
+    fold: int, train_gold_df: pd.DataFrame, val_df: pd.DataFrame,
+    pseudo_df: pd.DataFrame, args, device: torch.device,
+) -> float:
+    """Treina um fold até `args.epochs` épocas ou até `config.
+    EARLY_STOPPING_PATIENCE` épocas seguidas sem melhora de val_auc (o que
+    vier primeiro). Salva o melhor checkpoint do fold em
+    checkpoints/best_fold{fold}.pth e retorna o melhor val_auc alcançado."""
     train_df = pd.concat(
         [
             attach_label_weights(train_gold_df, weight=1.0),
@@ -220,32 +174,117 @@ def main():
     # em run_epoch, não aqui.
     criterion = nn.BCEWithLogitsLoss(reduction="none")
 
-    config.CHECKPOINT_DIR.mkdir(exist_ok=True, parents=True)
     best_auc = -1.0
+    epochs_without_improvement = 0
 
     for epoch in range(args.epochs):
         train_loss, train_auc, _ = run_epoch(
             model, train_loader, optimizer, criterion, device, train=True,
-            desc=f"epoch {epoch+1}/{args.epochs} [train]",
+            desc=f"fold {fold} epoch {epoch+1}/{args.epochs} [train]",
         )
         val_loss, val_auc, val_per_label = run_epoch(
             model, val_loader, optimizer, criterion, device, train=False,
-            desc=f"epoch {epoch+1}/{args.epochs} [val]",
+            desc=f"fold {fold} epoch {epoch+1}/{args.epochs} [val]",
         )
 
         print(
-            f"[epoch {epoch+1}/{args.epochs}] "
+            f"[fold {fold} epoch {epoch+1}/{args.epochs}] "
             f"train_loss={train_loss:.4f} train_auc={train_auc:.4f} | "
             f"val_loss={val_loss:.4f} val_auc={val_auc:.4f}"
         )
         print(f"  AUC por label (val): {val_per_label}")
 
+        # val_auc pode ser nan (fold sem as duas classes de nenhum label) --
+        # a comparação com nan é sempre False, então nunca conta como
+        # melhora, o que é o comportamento certo.
         if val_auc > best_auc:
             best_auc = val_auc
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), config.CHECKPOINT_DIR / f"best_fold{fold}.pth")
             print(f"  -> novo melhor modelo salvo (val_auc={val_auc:.4f})")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= config.EARLY_STOPPING_PATIENCE:
+                print(
+                    f"  -> early stopping (sem melhora por "
+                    f"{config.EARLY_STOPPING_PATIENCE} épocas)"
+                )
+                break
 
     print(f"Melhor val_auc (fold {fold}): {best_auc:.4f}")
+    return best_auc
+
+
+def main():
+    args = parse_args()
+    set_seed()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    df = pd.read_csv(config.TRAIN_CSV)
+
+    # gold_df: os 58 estudos com as 12 colunas de label REAIS preenchidas --
+    # são a única fonte de verdade pra validação. O fold (K-fold) é montado
+    # só sobre eles: cada um passa por validação em exatamente 1 dos 3 folds,
+    # nunca fica só no treino ao longo do processo.
+    gold_df = df.dropna(subset=config.TARGET_COLUMNS).reset_index(drop=True)
+    print(f"Estudos com label real: {len(gold_df)} / {len(df)}")
+
+    # pseudo_df: estudos SEM label real que ganharam ao menos 1 pseudo-label
+    # via weak supervision (Report -- ver src/weak_supervision.py). Entram
+    # SÓ no treino, nunca na validação -- a validação precisa ficar limpa
+    # (só gold) porque a precisão das regras (~0.5-0.8 contra o gold set) não
+    # é confiável o bastante pra medir o modelo.
+    pseudo_df = generate_pseudo_labels(df)
+    pseudo_df = pseudo_df[pseudo_df["is_pseudo_label"]].reset_index(drop=True)
+    print(f"Estudos com pseudo-label (só treino, peso {config.PSEUDO_LABEL_WEIGHT}): {len(pseudo_df)}")
+
+    if args.smoke_test:
+        gold_df = _filter_studies_with_local_images(gold_df)
+        pseudo_df = _filter_studies_with_local_images(pseudo_df)
+        print(f"[smoke-test] restringindo a estudos com imagem local: "
+              f"{len(gold_df)} gold, {len(pseudo_df)} pseudo")
+
+    config.CHECKPOINT_DIR.mkdir(exist_ok=True, parents=True)
+
+    # Cada linha de train.csv já é um StudyInstanceUID único (não há coluna
+    # de paciente), então fold direto não tem risco de vazamento. Usa
+    # MultilabelStratifiedKFold (em vez de KFold/StratifiedKFold comum) para
+    # manter a proporção das 12 classes em cada fold -- com só 58 exemplos e
+    # MCL tendo apenas 9 positivos, um split aleatório arrisca folds sem
+    # nenhum positivo de alguma classe. Com pouquíssimos exemplos (ex.:
+    # --smoke-test com só 4-5 estudos) a estratificação não faz sentido --
+    # usa um split manual simples (última linha vira validação) só pra
+    # exercitar o pipeline, com um único "fold".
+    if args.smoke_test and len(gold_df) < config.N_FOLDS * 2:
+        train_gold_df = gold_df.iloc[:-1].reset_index(drop=True)
+        val_df = gold_df.iloc[-1:].reset_index(drop=True)
+        fold_aucs = [train_one_fold(0, train_gold_df, val_df, pseudo_df, args, device)]
+    else:
+        mskf = MultilabelStratifiedKFold(
+            n_splits=config.N_FOLDS, shuffle=True, random_state=config.SEED
+        )
+        gold_df["fold"] = -1
+        y = gold_df[config.TARGET_COLUMNS].values
+        for f, (_, val_idx) in enumerate(mskf.split(gold_df, y)):
+            gold_df.loc[val_idx, "fold"] = f
+
+        # Treina TODOS os folds (não só o fold 0) -- cada um vira um
+        # checkpoint próprio (best_fold{f}.pth) e a inferência (infer.py)
+        # pode ensemblá-los (média das probabilidades) em vez de depender
+        # de um único fold.
+        fold_aucs = []
+        for f in range(config.N_FOLDS):
+            train_gold_df = gold_df[gold_df["fold"] != f].reset_index(drop=True)
+            val_df_f = gold_df[gold_df["fold"] == f].reset_index(drop=True)
+            fold_aucs.append(
+                train_one_fold(f, train_gold_df, val_df_f, pseudo_df, args, device)
+            )
+
+    valid_aucs = [a for a in fold_aucs if not np.isnan(a) and a > -1.0]
+    mean_auc = float(np.mean(valid_aucs)) if valid_aucs else float("nan")
+    print(f"\nVal AUC por fold: {fold_aucs}")
+    print(f"Val AUC médio entre folds: {mean_auc:.4f}")
 
 
 if __name__ == "__main__":

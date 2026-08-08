@@ -1,8 +1,12 @@
 """
-Gera submission.csv a partir de um checkpoint treinado.
+Gera submission.csv a partir de um ou mais checkpoints treinados. Com mais
+de um checkpoint (ex.: um por fold do k-fold), faz ensemble por média
+simples das probabilidades de cada modelo -- mais robusto que depender de
+um único fold.
 
 Uso:
     python -m src.infer --checkpoint checkpoints/best_fold0.pth
+    python -m src.infer --checkpoint checkpoints/best_fold0.pth checkpoints/best_fold1.pth checkpoints/best_fold2.pth
 """
 
 import argparse
@@ -23,7 +27,10 @@ from .model import KneeModel
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True, help="Caminho do .pth treinado")
+    parser.add_argument(
+        "--checkpoint", required=True, nargs="+",
+        help="Caminho de um ou mais .pth treinados (múltiplos -> ensemble por média)",
+    )
     parser.add_argument("--out", default=str(config.SUBMISSIONS_DIR / "submission.csv"))
     args = parser.parse_args()
 
@@ -42,9 +49,13 @@ def main():
     # pretrained=False: os pesos vêm todos do checkpoint carregado logo
     # abaixo, então baixar o ImageNet pré-treinado do timm seria só
     # desperdício de rede -- e a submissão roda sem internet mesmo.
-    model = KneeModel(pretrained=False).to(device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=device))
-    model.eval()
+    models = []
+    for ckpt_path in args.checkpoint:
+        model = KneeModel(pretrained=False).to(device)
+        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        model.eval()
+        models.append(model)
+    print(f"Ensemble de {len(models)} checkpoint(s): {args.checkpoint}")
 
     study_ids = []
     all_preds = []
@@ -53,11 +64,15 @@ def main():
         for batch in test_loader:
             image = batch["image"].to(device)
 
-            logits = model(image)
-            preds = torch.sigmoid(logits).cpu().numpy()
+            # Média simples das probabilidades de cada modelo -- ensemble
+            # por fold reduz a variância de um único split pequeno (58
+            # estudos gold).
+            batch_preds = torch.stack(
+                [torch.sigmoid(model(image)) for model in models], dim=0
+            ).mean(dim=0)
 
             study_ids.extend(batch["study_id"])
-            all_preds.append(preds)
+            all_preds.append(batch_preds.cpu().numpy())
 
     preds = np.concatenate(all_preds, axis=0)
 
