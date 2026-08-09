@@ -3,11 +3,9 @@ direito) a partir da geometria DICOM e orquestra o carregamento de um slice
 já normalizado nesse eixo, reaproveitando a leitura/redimensionamento de
 baixo nível de `dicom.py`.
 
-Roadmap (ver CLAUDE.md/PROGRESS.md): esta técnica já está implementada;
-trabalho futuro é robustecê-la (validação sistemática de divergência
-geometria x tag em escala, e possivelmente condicionar o espelhamento ao
-plano anatômico da série) -- ver `CLAUDE.md`, item de roadmap de
-lateralidade.
+O espelhamento é condicionado ao plano anatômico da série
+(`MIRROR_PLANES`) -- ver `apply_laterality_normalization`. Auditoria de
+divergência geometria x tag: ver `scripts/audit_laterality.py`.
 """
 
 from pathlib import Path
@@ -59,33 +57,53 @@ def compute_laterality(ds: pydicom.Dataset) -> str | None:
     return laterality if laterality in ("L", "R") else None
 
 
-def apply_laterality_normalization(img: np.ndarray, ds: pydicom.Dataset) -> np.ndarray:
-    """Espelha `img` horizontalmente se o lado do joelho computado a partir
-    de `ds` (ver `compute_laterality`) não for `config.CANONICAL_LATERALITY`.
+# Planos onde o espelhamento horizontal corrige o eixo medial-lateral de
+# verdade: em séries CORONAIS/AXIAIS, esquerda-direita na imagem 2D
+# corresponde a medial-lateral anatômico. Em séries SAGITAIS (as
+# priorizadas por `series.select_preferred_series_id` hoje -- ou seja, a
+# maioria dos casos na prática), esquerda-direita na imagem 2D corresponde
+# a anterior-posterior, não a medial-lateral -- espelhar ali só troca o
+# enquadramento A/P sem corrigir nada, perturbando a imagem à toa. Plano
+# desconhecido (None, quando não há series_df disponível) mantém o
+# comportamento conservador antigo (espelha), pra não regredir silenciosamente
+# quando a informação de plano simplesmente não foi passada adiante.
+MIRROR_PLANES = {None, "Coronal", "Axial"}
 
-    Nota: essa normalização corrige diretamente o eixo medial-lateral em
-    séries CORONAIS/AXIAIS, onde esquerda-direita na imagem 2D corresponde
-    a medial-lateral anatômico. Em séries SAGITAIS (as priorizadas por
-    `series.select_preferred_series_id` hoje), esquerda-direita na imagem
-    2D corresponde a anterior-posterior, não a medial-lateral -- pra essas,
-    o espelhamento troca o enquadramento anterior/posterior em vez de
-    corrigir medial/lateral. Ainda assim aplicamos de forma consistente
-    (não condicionamos ao plano) porque: (1) é inofensivo pra sagital
-    (segue sendo anatomia válida, só com A/P trocado) e (2) já deixa o
-    pipeline correto pra quando séries coronais/axiais entrarem em uso
-    (fallback atual, ou uma evolução futura multi-plano)."""
+
+def apply_laterality_normalization(
+    img: np.ndarray, ds: pydicom.Dataset, plane: str | None = None
+) -> np.ndarray:
+    """Espelha `img` horizontalmente se o lado do joelho computado a partir
+    de `ds` (ver `compute_laterality`) não for `config.CANONICAL_LATERALITY`
+    E o plano anatômico da série (`plane`) estiver em `MIRROR_PLANES` --
+    ver comentário acima da constante."""
     side = compute_laterality(ds)
-    if side is not None and side != config.CANONICAL_LATERALITY:
+    if side is not None and side != config.CANONICAL_LATERALITY and plane in MIRROR_PLANES:
         return np.ascontiguousarray(img[:, ::-1])
     return img
 
 
-def load_dicom_slice(path: Path, image_size: int = config.IMAGE_SIZE) -> np.ndarray:
+def load_dicom_slice(
+    path: Path,
+    image_size: int = config.IMAGE_SIZE,
+    plane: str | None = None,
+    fov_mm: float = config.CROP_FOV_MM,
+) -> np.ndarray:
     """Carrega um único slice DICOM como array float32 normalizado em
-    [0,1], com lateralidade corrigida (ver `apply_laterality_normalization`)
-    e redimensionado pra `image_size`. Pipeline completo usado por
-    `dataset.load_study_image`."""
+    [0,1], com corte por escala física (ver `dicom.crop_to_physical_fov`),
+    lateralidade corrigida (ver `apply_laterality_normalization`) e
+    redimensionado pra `image_size`. `plane` é o `Anatomical_Plane` da
+    série (de `train_series.csv`/`test_series.csv`), usado só pra decidir
+    se o espelhamento se aplica. Se `PixelSpacing` não estiver disponível
+    nesse slice, pula o crop físico (abstenção -- ver
+    `dicom.read_pixel_spacing`) em vez de lançar exceção. Pipeline completo
+    usado por `dataset.load_study_image`."""
     ds = dicom_io.read_dicom(path)
     img = dicom_io.normalize_intensity(dicom_io.read_pixel_array(ds))
-    img = apply_laterality_normalization(img, ds)
+
+    pixel_spacing = dicom_io.read_pixel_spacing(ds)
+    if pixel_spacing is not None:
+        img = dicom_io.crop_to_physical_fov(img, pixel_spacing, fov_mm)
+
+    img = apply_laterality_normalization(img, ds, plane=plane)
     return dicom_io.resize_to(img, image_size)

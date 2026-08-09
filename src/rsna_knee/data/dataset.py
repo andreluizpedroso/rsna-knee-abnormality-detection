@@ -64,11 +64,51 @@ def load_study_image(
     slice_path = slices_mod.pick_middle_slice(series_dir)
     if slice_path is None:
         raise FileNotFoundError(f"Nenhum slice .dcm encontrado em {series_dir}")
-    img = load_dicom_slice(slice_path)
+    plane = series_mod.lookup_anatomical_plane(series_dir.name, series_df)
+    img = load_dicom_slice(slice_path, plane=plane)
     return np.stack([img] * 3, axis=0)  # (3, H, W) para backbones pré-treinados
 
 
-def attach_label_weights(df: pd.DataFrame, weight: float) -> pd.DataFrame:
+def load_study_bag(
+    study_dir: Path,
+    study_id: str | None = None,
+    series_df: pd.DataFrame | None = None,
+    max_series: int = config.MAX_SERIES_PER_STUDY,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Monta um "saco" de até `max_series` imagens (uma por série
+    selecionada, ver `series.select_series_subset`) de um estudo, pra uso
+    com `modeling.model.KneeMILModel` -- generaliza `load_study_image`
+    (1 série só) pra seleção multi-série com agregação por atenção
+    (roadmap item 7, ver CLAUDE.md).
+
+    Retorna `(images, mask)`: `images` com shape `(max_series, 3, H, W)`
+    (séries faltantes preenchidas com zero) e `mask` com shape
+    `(max_series,)` (`1.0` = série real, `0.0` = padding) -- shape fixo
+    facilita o batching (sem precisar de `collate_fn` customizado pra
+    bags de tamanho variável)."""
+    series_dirs = series_mod.pick_series_dirs(study_dir, study_id, series_df, max_series=max_series)
+    if not series_dirs:
+        raise FileNotFoundError(f"Nenhuma série encontrada em {study_dir}")
+
+    images = np.zeros((max_series, 3, config.IMAGE_SIZE, config.IMAGE_SIZE), dtype=np.float32)
+    mask = np.zeros(max_series, dtype=np.float32)
+
+    for i, series_dir in enumerate(series_dirs):
+        slice_path = slices_mod.pick_middle_slice(series_dir)
+        if slice_path is None:
+            continue  # série sem nenhum .dcm -- fica como padding (mask 0)
+        plane = series_mod.lookup_anatomical_plane(series_dir.name, series_df)
+        img = load_dicom_slice(slice_path, plane=plane)
+        images[i] = np.stack([img] * 3, axis=0)
+        mask[i] = 1.0
+
+    if not mask.any():
+        raise FileNotFoundError(f"Nenhum slice .dcm encontrado nas séries de {study_dir}")
+
+    return images, mask
+
+
+def attach_label_weights(df: pd.DataFrame, weight: float | dict[str, float]) -> pd.DataFrame:
     """Prepara `df` pra entrar no KneeDataset com peso por elemento (estudo x
     label) no loss -- usado pra dar menos peso às pseudo-labels de weak
     supervision (ver `labels.py`) do que aos 58 labels reais. Cria uma
@@ -78,12 +118,15 @@ def attach_label_weights(df: pd.DataFrame, weight: float) -> pd.DataFrame:
     com 0.0 (valor arbitrário -- peso 0 os anula no loss) só pra não
     propagar NaN pro tensor.
 
-    Roadmap (CLAUDE.md): ponderação granular por confiança (peso por
-    label, não um escalar único pra tudo) é uma técnica futura que estende
-    esta função -- ver `labels.evaluate_against_gold`."""
+    `weight` aceita um escalar (mesmo peso pra todas as 12 colunas -- ex.
+    `1.0` pros labels gold) ou um `dict[str, float]` com peso por label
+    (ex. `labels.label_confidence_weights`, derivado da precisão de cada
+    regra contra o gold). Labels ausentes do dict caem no peso default
+    `1.0`."""
     out = df.copy()
     for col in config.TARGET_COLUMNS:
-        out[f"{col}{config.WEIGHT_COLUMN_SUFFIX}"] = out[col].notna().astype(np.float32) * weight
+        col_weight = weight if isinstance(weight, (int, float)) else weight.get(col, 1.0)
+        out[f"{col}{config.WEIGHT_COLUMN_SUFFIX}"] = out[col].notna().astype(np.float32) * col_weight
         out[col] = out[col].fillna(0.0)
     return out
 
@@ -135,6 +178,58 @@ class KneeDataset(Dataset):
             else:
                 # sem attach_label_weights (ex.: uso direto fora do fluxo de
                 # weak supervision) -- todo mundo pesa igual, como antes.
+                weights = np.ones(len(config.TARGET_COLUMNS), dtype=np.float32)
+            item["target_weights"] = torch.from_numpy(weights)
+
+        return item
+
+
+class KneeMILDataset(Dataset):
+    """Variante multi-instância de `KneeDataset`, pra uso com
+    `modeling.model.KneeMILModel` (roadmap item 7, ver CLAUDE.md) -- cada
+    item é um "saco" de até `max_series` imagens (`load_study_bag`) em vez
+    de 1 imagem só. Mesmo contrato de `df`/`is_train` de `KneeDataset`."""
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        series_dir: Path,
+        is_train: bool = True,
+        series_csv: Path | None = None,
+        max_series: int = config.MAX_SERIES_PER_STUDY,
+    ) -> None:
+        self.df = df.reset_index(drop=True)
+        self.series_dir = Path(series_dir)
+        self.is_train = is_train
+        self.max_series = max_series
+        self.series_df = pd.read_csv(series_csv) if series_csv is not None else None
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        row = self.df.iloc[idx]
+        study_id = row[config.ID_COLUMN]
+
+        study_dir = self.series_dir / str(study_id)
+        images, mask = load_study_bag(
+            study_dir, study_id, self.series_df, max_series=self.max_series
+        )
+
+        item = {
+            "study_id": study_id,
+            "images": torch.from_numpy(images),
+            "mask": torch.from_numpy(mask),
+        }
+
+        if self.is_train:
+            targets = row[config.TARGET_COLUMNS].astype(np.float64).fillna(0.0).values.astype(np.float32)
+            item["targets"] = torch.from_numpy(targets)
+
+            weight_cols = [f"{c}{config.WEIGHT_COLUMN_SUFFIX}" for c in config.TARGET_COLUMNS]
+            if all(c in self.df.columns for c in weight_cols):
+                weights = row[weight_cols].values.astype(np.float32)
+            else:
                 weights = np.ones(len(config.TARGET_COLUMNS), dtype=np.float32)
             item["target_weights"] = torch.from_numpy(weights)
 

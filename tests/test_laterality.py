@@ -67,3 +67,33 @@ def test_apply_laterality_normalization_unchanged_when_side_matches_canonical():
 
     out = apply_laterality_normalization(img, ds)
     assert np.array_equal(out, img)
+
+
+def test_apply_laterality_normalization_skips_mirror_for_sagittal():
+    # Plano sagital: espelhar só trocaria enquadramento anterior/posterior,
+    # sem corrigir medial/lateral -- não deve mais mexer na imagem.
+    img = np.zeros((4, 4), dtype=np.float32)
+    img[0, 0] = 1.0
+
+    opposite_side = "L" if CANONICAL_LATERALITY == "R" else "R"
+    ds = _make_dataset_with_geometry(
+        ipp_x=10.0 if opposite_side == "L" else -20.0
+    )
+    assert compute_laterality(ds) == opposite_side
+
+    out = apply_laterality_normalization(img, ds, plane="Sagittal")
+    assert np.array_equal(out, img)
+
+
+def test_apply_laterality_normalization_mirrors_for_coronal_and_axial():
+    img = np.zeros((4, 4), dtype=np.float32)
+    img[0, 0] = 1.0
+
+    opposite_side = "L" if CANONICAL_LATERALITY == "R" else "R"
+    ds = _make_dataset_with_geometry(
+        ipp_x=10.0 if opposite_side == "L" else -20.0
+    )
+
+    for plane in ("Coronal", "Axial", None):
+        out = apply_laterality_normalization(img, ds, plane=plane)
+        assert np.array_equal(out, img[:, ::-1]), f"deveria espelhar pro plano {plane!r}"

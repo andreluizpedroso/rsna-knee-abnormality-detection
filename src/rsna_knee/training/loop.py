@@ -6,6 +6,7 @@ de treino da CLI (ver `cli/train.py`, que constrói o `TrainRunConfig` a
 partir dos argumentos de linha de comando).
 """
 
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ class TrainRunConfig:
 
     smoke_test: bool = False
     epochs: int = config.EPOCHS
+    seed: int = config.SEED
 
 
 def set_seed(seed: int = config.SEED) -> None:
@@ -99,6 +101,42 @@ def run_epoch(
     return avg_loss, macro, per_label
 
 
+def checkpoint_metadata_path(checkpoint_path: Path) -> Path:
+    """Caminho do sidecar `.json` de metadados de um checkpoint -- mesmo
+    nome, extensão trocada."""
+    return Path(checkpoint_path).with_suffix(".json")
+
+
+def save_checkpoint_metadata(
+    checkpoint_path: Path,
+    fold: int,
+    seed: int,
+    val_auc: float,
+    per_label_auc: dict[str, float],
+) -> None:
+    """Salva um `.json` ao lado do checkpoint com a métrica de validação
+    que o gerou -- pré-requisito pra ensemble ponderado por holdout (ver
+    `modeling.ensemble.weighted_ensemble`/`weights_from_val_auc`), já que
+    hoje essa métrica só era impressa no console, não persistida."""
+    metadata = {
+        "fold": fold,
+        "seed": seed,
+        "val_auc": val_auc,
+        "per_label_auc": per_label_auc,
+    }
+    checkpoint_metadata_path(checkpoint_path).write_text(json.dumps(metadata, indent=2))
+
+
+def load_checkpoint_metadata(checkpoint_path: Path) -> dict | None:
+    """Lê o sidecar de metadados de um checkpoint (ver
+    `save_checkpoint_metadata`). `None` se não existir (ex.: checkpoint
+    antigo, salvo antes desse metadado existir)."""
+    meta_path = checkpoint_metadata_path(checkpoint_path)
+    if not meta_path.exists():
+        return None
+    return json.loads(meta_path.read_text())
+
+
 def filter_studies_with_local_images(df: pd.DataFrame) -> pd.DataFrame:
     """Mantém só as linhas cujo estudo tem pasta baixada localmente em
     config.TRAIN_SERIES_DIR/<StudyInstanceUID>/. Usado por --smoke-test pra
@@ -160,15 +198,24 @@ def train_one_fold(
     pseudo_df: pd.DataFrame,
     run_config: TrainRunConfig,
     device: torch.device,
+    pseudo_label_weight: float | dict[str, float] = config.PSEUDO_LABEL_WEIGHT,
 ) -> float:
     """Treina um fold até `run_config.epochs` épocas ou até
     `config.EARLY_STOPPING_PATIENCE` épocas seguidas sem melhora de val_auc
     (o que vier primeiro). Salva o melhor checkpoint do fold em
-    checkpoints/best_fold{fold}.pth e retorna o melhor val_auc alcançado."""
+    checkpoints/best_fold{fold}.pth (ou `best_fold{fold}_seed{seed}.pth` se
+    `run_config.seed` for diferente de `config.SEED` -- permite treinar o
+    mesmo fold com seeds diferentes sem sobrescrever, pro ensemble
+    multi-seed), com um `.json` de metadados ao lado (ver
+    `save_checkpoint_metadata`). Retorna o melhor val_auc alcançado.
+
+    `pseudo_label_weight` aceita um escalar (comportamento original,
+    `config.PSEUDO_LABEL_WEIGHT` uniforme) ou um `dict[str, float]` com
+    peso por label -- ver `data.labels.label_confidence_weights`."""
     train_df = pd.concat(
         [
             attach_label_weights(train_gold_df, weight=1.0),
-            attach_label_weights(pseudo_df, weight=config.PSEUDO_LABEL_WEIGHT),
+            attach_label_weights(pseudo_df, weight=pseudo_label_weight),
         ],
         ignore_index=True,
     )
@@ -242,7 +289,10 @@ def train_one_fold(
             best_auc = val_auc
             epochs_without_improvement = 0
             config.CHECKPOINT_DIR.mkdir(exist_ok=True, parents=True)
-            torch.save(model.state_dict(), config.CHECKPOINT_DIR / f"best_fold{fold}.pth")
+            seed_suffix = "" if run_config.seed == config.SEED else f"_seed{run_config.seed}"
+            ckpt_path = config.CHECKPOINT_DIR / f"best_fold{fold}{seed_suffix}.pth"
+            torch.save(model.state_dict(), ckpt_path)
+            save_checkpoint_metadata(ckpt_path, fold, run_config.seed, val_auc, val_per_label)
             print(f"  -> novo melhor modelo salvo (val_auc={val_auc:.4f})")
         else:
             epochs_without_improvement += 1

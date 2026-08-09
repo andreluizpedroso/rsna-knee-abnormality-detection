@@ -1,10 +1,13 @@
 """Geração da submissão: carrega checkpoints, roda inferência em ensemble
-(hoje: média simples de sigmoid) e escreve o `submission.csv` final.
+e escreve o `submission.csv` final.
 
-Extraído do antigo `src/infer.py` (que tinha tudo dentro de um único
-`main()`) em 3 funções nomeadas -- pré-requisito prático pro roadmap de TTA
-e ensemble ponderado por holdout (ver `tta.py`, `modeling/ensemble.py`),
-que vão reaproveitar `load_ensemble_models`/`write_submission` sem duplicar.
+Dois caminhos de predição:
+- `predict_ensemble`: 1 slice por estudo (via `KneeDataset`/`DataLoader`),
+  ensemble por média simples de sigmoid. Caminho original, mais rápido.
+- `predict_ensemble_with_tta`: TTA de slice (`inference.tta`) + ensemble
+  por rank-mean (`modeling.ensemble`) -- mais lento (N forwards por
+  estudo em vez de 1), mas mais robusto a variância de qual slice é "o
+  central" e a diferença de calibração entre checkpoints.
 """
 
 from pathlib import Path
@@ -16,7 +19,9 @@ import numpy as np
 import pandas as pd
 
 from .. import config
+from ..modeling.ensemble import rank_mean_ensemble
 from ..modeling.model import KneeModel
+from .tta import predict_study_with_tta
 
 
 def load_ensemble_models(checkpoint_paths: list[str], device: torch.device) -> list[KneeModel]:
@@ -55,6 +60,39 @@ def predict_ensemble(
             all_preds.append(batch_preds.cpu().numpy())
 
     preds = np.concatenate(all_preds, axis=0)
+    return study_ids, preds
+
+
+def predict_ensemble_with_tta(
+    models: list[KneeModel],
+    study_ids: list[str],
+    series_dir: Path,
+    series_df: pd.DataFrame | None,
+    device: torch.device,
+    n_windows: int = config.TTA_WINDOWS,
+    weights: list[float] | None = None,
+) -> tuple[list[str], np.ndarray]:
+    """Prediz cada estudo em `study_ids` com TTA de slice
+    (`inference.tta.predict_study_with_tta`) pra cada modelo, e agrega as
+    predições entre modelos por rank-mean (`modeling.ensemble.rank_mean_ensemble`)
+    em vez da média simples de sigmoid de `predict_ensemble`. `weights`
+    (1 por modelo, na mesma ordem de `models`) pondera o ensemble --
+    ver `modeling.ensemble.weights_from_checkpoint_metadata`; sem
+    `weights`, todo modelo pesa igual. Retorna `(study_ids, preds)` na
+    mesma ordem de `study_ids` (não da ordem de um `DataLoader`, já que
+    aqui a leitura é feita 1 estudo por vez)."""
+    per_model_preds = []
+    for model in models:
+        preds = [
+            predict_study_with_tta(
+                model, series_dir / str(study_id), study_id, series_df, device,
+                n_windows=n_windows,
+            )
+            for study_id in study_ids
+        ]
+        per_model_preds.append(np.stack(preds, axis=0))
+
+    preds = rank_mean_ensemble(per_model_preds, weights=weights)
     return study_ids, preds
 
 

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .. import config
-from ..data.labels import generate_pseudo_labels
+from ..data.labels import generate_pseudo_labels, label_confidence_weights
 from ..training.loop import (
     TrainRunConfig,
     build_folds,
@@ -37,14 +37,20 @@ def parse_args() -> argparse.Namespace:
         "--epochs", type=int, default=config.EPOCHS,
         help="Override de config.EPOCHS (útil pro --smoke-test rodar rápido).",
     )
+    parser.add_argument(
+        "--seed", type=int, default=config.SEED,
+        help="Seed de treino. Rodar o mesmo --smoke-test/fold com seeds "
+             "diferentes gera checkpoints separados (best_fold{N}_seed{S}.pth) "
+             "pra ensemble multi-seed -- ver modeling/ensemble.py.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    run_config = TrainRunConfig(smoke_test=args.smoke_test, epochs=args.epochs)
+    run_config = TrainRunConfig(smoke_test=args.smoke_test, epochs=args.epochs, seed=args.seed)
 
-    set_seed()
+    set_seed(run_config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -64,7 +70,13 @@ def main() -> None:
     # confiável o bastante pra medir o modelo.
     pseudo_df = generate_pseudo_labels(df)
     pseudo_df = pseudo_df[pseudo_df["is_pseudo_label"]].reset_index(drop=True)
-    print(f"Estudos com pseudo-label (só treino, peso {config.PSEUDO_LABEL_WEIGHT}): {len(pseudo_df)}")
+    print(f"Estudos com pseudo-label (só treino): {len(pseudo_df)}")
+
+    # Peso granular por label (precisão da regra contra o gold, ver
+    # data.labels.label_confidence_weights) em vez do escalar único
+    # config.PSEUDO_LABEL_WEIGHT pra todas as 12 colunas.
+    pseudo_weights = label_confidence_weights(df)
+    print(f"Pesos de pseudo-label por label: { {k: round(v, 3) for k, v in pseudo_weights.items()} }")
 
     if run_config.smoke_test:
         gold_df = filter_studies_with_local_images(gold_df)
@@ -76,7 +88,10 @@ def main() -> None:
 
     folds = build_folds(gold_df, smoke_test=run_config.smoke_test)
     fold_aucs = [
-        train_one_fold(f, train_gold_df, val_df, pseudo_df, run_config, device)
+        train_one_fold(
+            f, train_gold_df, val_df, pseudo_df, run_config, device,
+            pseudo_label_weight=pseudo_weights,
+        )
         for f, train_gold_df, val_df in folds
     ]
 

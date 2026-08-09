@@ -171,3 +171,28 @@ EARLY_STOPPING_PATIENCE = 3
 # cada série selecionada. Revisitar depois (MIL / 2.5D / 3D) para melhor
 # sinal (ver roadmap em CLAUDE.md).
 SLICES_PER_SERIES = 1
+
+# Nº máximo de séries por estudo no "saco" de instâncias do
+# KneeMILModel/KneeMILDataset (roadmap item 7 -- multi-série + atenção,
+# ver CLAUDE.md). Estudos locais têm em média ~5.5 séries (ver
+# notebooks/historico/01_eda.ipynb, seção 3) -- 3 cobre os planos
+# principais (sagital + coronal + axial) sem deixar o "saco" grande
+# demais pro custo de 1 forward do backbone por instância.
+MAX_SERIES_PER_STUDY = 3
+
+# --- Inferência ------------------------------------------------------------
+# Nº de slices vizinhos ao centro geométrico usados em test-time
+# augmentation (TTA) -- ver inference/tta.py. Ímpar, pra manter o slice
+# central exatamente no meio da janela. Só afeta inferência, não treino.
+TTA_WINDOWS = 3
+
+# FOV alvo (mm) pro corte por escala física -- ver data/dicom.crop_to_physical_fov.
+# Calibrado pela auditoria dos 5 estudos locais disponíveis
+# (scripts/audit_laterality.py baixa a mesma amostra -- ver
+# scripts/download_sample_images.py): FOV observado (PixelSpacing x
+# Rows/Columns) variou de 160mm a 240mm, mediana ~180mm. 140mm fica
+# abaixo do mínimo observado (garante um recorte de verdade, não um
+# padding, nessa amostra) e ainda contém a articulação do joelho.
+# AMOSTRA PEQUENA (5 estudos) -- recalibrar com EDA sobre o dataset
+# completo (só disponível no Kaggle) antes de confiar nisso em produção.
+CROP_FOV_MM = 140.0

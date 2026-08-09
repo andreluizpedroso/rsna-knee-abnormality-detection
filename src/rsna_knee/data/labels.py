@@ -246,3 +246,34 @@ def evaluate_against_gold(df: pd.DataFrame) -> pd.DataFrame:
         rows.append(row)
 
     return pd.DataFrame(rows).set_index("label")
+
+
+def label_confidence_weights(
+    df: pd.DataFrame, min_weight: float = 0.1, max_weight: float = 0.9
+) -> dict[str, float]:
+    """Deriva um peso de pseudo-label POR LABEL a partir da precisão
+    histórica da regra daquele label contra o gold (`evaluate_against_gold`),
+    em vez de um único peso uniforme pra todas as 12 colunas
+    (`config.PSEUDO_LABEL_WEIGHT`). Generaliza a exclusão binária de
+    `EXCLUDED_FROM_PSEUDO_LABELS` (usar ou não usar aquele label) pra um
+    contínuo de confiança: regra mais precisa contra o gold -> peso mais
+    perto de `max_weight`; regra imprecisa -> peso mais perto de
+    `min_weight`.
+
+    Labels em `EXCLUDED_FROM_PSEUDO_LABELS` não entram no dict retornado
+    (continuam de fora -- `generate_pseudo_labels` nunca preenche essas
+    colunas, então não faz sentido atribuir peso a elas). Labels sem
+    nenhuma predição coberta no gold (precisão `NaN`) recebem `min_weight`
+    -- ausência de sinal é tratada como baixa confiança, não como
+    confiança neutra/alta."""
+    metrics = evaluate_against_gold(df)
+    weights: dict[str, float] = {}
+    for label in config.TARGET_COLUMNS:
+        if label in EXCLUDED_FROM_PSEUDO_LABELS:
+            continue
+        precision = metrics.loc[label, "precision"]
+        if pd.isna(precision):
+            weights[label] = min_weight
+        else:
+            weights[label] = float(np.clip(precision, min_weight, max_weight))
+    return weights
