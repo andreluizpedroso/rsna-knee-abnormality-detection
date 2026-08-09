@@ -4,8 +4,7 @@ Configuração centralizada do projeto.
 Estrutura confirmada na aba Data do Kaggle (não são mais suposições):
 
 train.csv (uma linha por STUDY):
-    StudyInstanceUID, PatientSex (Male/Female, pode ser vazio),
-    Report (texto livre do laudo, multi-idioma),
+    StudyInstanceUID, Report (texto livre do laudo, multi-idioma),
     + 12 colunas de label binário (0/1) -- MAS só uma pequena parte dos
     estudos de treino tem essas 12 colunas preenchidas. O resto vem sem
     label e o Report é fornecido para você tentar derivar labels (weak
@@ -65,7 +64,7 @@ if IS_KAGGLE:
     )
     WORKING_DIR = Path("/kaggle/working")
 else:
-    ROOT_DIR = Path(__file__).resolve().parent.parent
+    ROOT_DIR = Path(__file__).resolve().parent.parent.parent
     DATA_DIR = ROOT_DIR / "data"
     WORKING_DIR = ROOT_DIR
 
@@ -90,7 +89,21 @@ TARGET_COLUMNS = [
 ID_COLUMN = "StudyInstanceUID"
 SERIES_ID_COLUMN = "SeriesInstanceUID"
 TEXT_COLUMN = "Report"
-SEX_COLUMN = "PatientSex"
+
+# --- Dados/lateralidade ----------------------------------------------------
+# Lado escolhido como referência -- séries do lado oposto são espelhadas
+# horizontalmente (ver data/laterality.py) pra normalizar o eixo
+# medial-lateral. 4 dos 12 labels (Medial/Lateral Meniscus, Medial/Lateral
+# OA) só fazem sentido em relação a um lado fixo do joelho; sem essa
+# normalização, joelho esquerdo e direito têm o eixo medial-lateral
+# espelhado um em relação ao outro, e o modelo aprenderia esses 4 labels a
+# partir de um eixo invertido em ~metade dos estudos.
+CANONICAL_LATERALITY = "R"
+
+# Sufixo das colunas de peso por elemento (estudo x label) geradas por
+# data.dataset.attach_label_weights -- movido pra cá (antes vivia solto em
+# dataset.py) por ser um parâmetro de configuração, não lógica.
+WEIGHT_COLUMN_SUFFIX = "__w"
 
 # --- Treino ----------------------------------------------------------------
 SEED = 42
@@ -99,6 +112,11 @@ SEED = 42
 # não ter nenhum positivo de MCL. MultilabelStratifiedKFold (iterstrat) é
 # usado em vez de KFold/StratifiedKFold comum porque o problema é multi-label.
 N_FOLDS = 3
+# Abaixo desse nº de estudos gold, um k-fold estratificado não faz sentido
+# (folds ficariam pequenos demais pra estratificar) -- cai pro split manual
+# simples usado no --smoke-test. Nomeado explicitamente em vez de deixar
+# "N_FOLDS * 2" inline em training/loop.py.
+MIN_STUDIES_FOR_KFOLD = N_FOLDS * 2
 # 392 (não 384) -- múltiplo de 14, exigido pelo patch size do backbone
 # DINOv2 (ViT-S/14) abaixo. Se algum dia voltar pra um backbone CNN
 # (resnet etc.), qualquer tamanho serve; 384 era só o valor usado antes.
@@ -107,14 +125,17 @@ BATCH_SIZE = 16
 NUM_WORKERS = 4
 LR = 3e-4   # usada pra head sempre; pra backbone CNN também (fine-tuning de CNN tolera LR mais alta)
 # LR bem menor só pro backbone quando IMAGE_BACKBONE é DINOv2 (ver
-# train.py) -- fine-tuning de ViT pré-treinado com a mesma LR da head
-# (3e-4) destrói os pesos pré-treinados nas primeiras batches; o primeiro
-# treino real com DINOv2 ficou com train_auc travado em ~0.50 (ruído) por
-# 10 épocas inteiras nos 3 folds por causa disso (ver PROGRESS.md). Valor
-# inspirado no notebook público "DINOsaur V2" (LR_BACKBONE=9e-6).
+# training/loop.py) -- fine-tuning de ViT pré-treinado com a mesma LR da
+# head (3e-4) destrói os pesos pré-treinados nas primeiras batches; o
+# primeiro treino real com DINOv2 ficou com train_auc travado em ~0.50
+# (ruído) por 10 épocas inteiras nos 3 folds por causa disso (ver
+# PROGRESS.md). Valor inspirado no notebook público "DINOsaur V2"
+# (LR_BACKBONE=9e-6).
 DINOV2_BACKBONE_LR = 1e-5
 WEIGHT_DECAY = 1e-2
 EPOCHS = 10
+HEAD_DROPOUT = 0.2
+HEAD_HIDDEN_DIM = 256
 
 # DINOv2-small (ver PROGRESS.md, seção DINOv2): ViT auto-supervisionado da
 # Meta, pré-treinado em bilhões de imagens sem label -- costuma superar
@@ -126,14 +147,15 @@ EPOCHS = 10
 # treinar/rodar no Kaggle, valida mais rápido se a troca de backbone ajuda
 # antes de investir numa rodada maior de GPU no "base". O timm já registra
 # os pesos DINOv2 (baixa do HF Hub igual ao resnet50 antes -- não precisa
-# de torch.hub nem de Kaggle Model separado). model.py detecta "dinov2" no
-# nome do backbone e ativa dynamic_img_size automaticamente (exigido pra
-# aceitar IMAGE_SIZE=392 em vez do tamanho de pré-treino padrão, 518).
+# de torch.hub nem de Kaggle Model separado). modeling/backbone.py detecta
+# "dinov2" no nome do backbone e ativa dynamic_img_size automaticamente
+# (exigido pra aceitar IMAGE_SIZE=392 em vez do tamanho de pré-treino
+# padrão, 518).
 IMAGE_BACKBONE = "vit_small_patch14_dinov2.lvd142m"
 
 # Peso no BCE loss dos exemplos com pseudo-label (weak supervision via
-# src/weak_supervision.py) em relação aos 58 exemplos com label real (peso
-# 1.0). Precisão das regras ficou em ~0.5-0.8 contra o gold set (ver
+# data/labels.py) em relação aos 58 exemplos com label real (peso 1.0).
+# Precisão das regras ficou em ~0.5-0.8 contra o gold set (ver
 # evaluate_against_gold) -- peso reduzido evita que o ruído deles domine o
 # gradiente. É por-elemento (por estudo x label), não só por-amostra: uma
 # célula sem pseudo-label (regra abstev) tem peso 0.
@@ -145,6 +167,7 @@ PSEUDO_LABEL_WEIGHT = 0.3
 EARLY_STOPPING_PATIENCE = 3
 
 # Quantos slices amostrar por série ao montar o exemplo de treino (ver
-# dataset.py) -- estratégia inicial simples: pega o slice do meio de cada
-# série selecionada. Revisitar depois (MIL / 2.5D / 3D) para melhor sinal.
+# data/slices.py) -- estratégia inicial simples: pega o slice do meio de
+# cada série selecionada. Revisitar depois (MIL / 2.5D / 3D) para melhor
+# sinal (ver roadmap em CLAUDE.md).
 SLICES_PER_SERIES = 1

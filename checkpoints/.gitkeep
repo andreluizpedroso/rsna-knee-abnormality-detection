@@ -1,0 +1,3 @@
+# Saída local do treino do pipeline histórico (src/train.py).
+# Os checkpoints (*.pth) são gitignored -- nunca vão pro GitHub.
+# Este arquivo só existe pra manter a pasta versionada e seu propósito claro.

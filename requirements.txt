@@ -31,3 +31,7 @@ kaggle
 matplotlib
 seaborn
 jupyter
+
+# Dev/Test
+pytest
+pytest-cov

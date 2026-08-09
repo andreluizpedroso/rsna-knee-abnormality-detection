@@ -1,8 +1,8 @@
 """
 Baixa uma amostra mínima de imagens DICOM (só a série sagital
 fluid-sensitive de N estudos com label real) pra rodar um smoke test do
-pipeline (`python -m src.train --smoke-test`) sem precisar do dataset
-completo (819.640 arquivos / 569.76 GB).
+pipeline (`python -m src.rsna_knee.cli.train --smoke-test`) sem precisar do
+dataset completo (819.640 arquivos / 569.76 GB).
 
 A Kaggle API não permite baixar uma pasta inteira nem buscar arquivos por
 prefixo -- só `-f <caminho exato do arquivo>` pra download, e a listagem
@@ -25,15 +25,15 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 # No Windows, importar torch depois de pandas pode quebrar o carregamento de
-# DLL do torch (c10.dll) -- src.dataset importa torch, então precisa vir
-# antes de qualquer import de pandas neste script.
+# DLL do torch (c10.dll) -- src.rsna_knee.data.dataset importa torch, então
+# precisa vir antes de qualquer import de pandas neste script.
 import torch  # noqa: F401
 
 import pandas as pd
 from kaggle.api.kaggle_api_extended import KaggleApi
 
-from src import config
-from src.dataset import select_preferred_series_id
+from src.rsna_knee import config
+from src.rsna_knee.data.series import select_preferred_series_id
 
 COMPETITION = "rsna-knee-abnormality-detection"
 TRAIN_PREFIX = "train_series/"

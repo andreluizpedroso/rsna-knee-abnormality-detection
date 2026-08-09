@@ -1,8 +1,8 @@
 """
 Weak supervision: deriva pseudo-labels para as 12 classes a partir do texto
 livre do `Report`, para os ~4.3k estudos de treino que têm laudo mas não têm
-as 12 colunas de label preenchidas (ver CLAUDE.md e notebooks/01_eda.ipynb,
-seção 5).
+as 12 colunas de label preenchidas (ver CLAUDE.md e
+notebooks/historico/01_eda.ipynb, seção 5).
 
 Abordagem: regras/regex (estilo labeling functions), não um modelo de NLP
 treinado -- os laudos vêm em vários idiomas (inglês, espanhol, alemão,
@@ -25,6 +25,15 @@ Isso é deliberadamente conservador: preferimos abster (NaN, sem pseudo-label)
 a inventar um label errado. Use `evaluate_against_gold` para checar a
 qualidade das regras contra os 58 estudos que já têm label verdadeiro antes
 de confiar nas pseudo-labels dos demais.
+
+O bloco de avaliação via linha de comando (antigo `if __name__ == "__main__"`
+de `weak_supervision.py`) mora agora em `cli/evaluate_labels.py` -- este
+módulo é só a biblioteca.
+
+Roadmap (ver CLAUDE.md/PROGRESS.md): ponderação diferenciada gold vs.
+pseudo-label por CONFIANÇA (peso por label derivado de
+`evaluate_against_gold`, não um escalar único) é uma técnica futura que usa
+as funções deste módulo, sem mudar a lógica de extração em si.
 """
 
 import re
@@ -33,7 +42,7 @@ import unicodedata
 import numpy as np
 import pandas as pd
 
-from . import config
+from .. import config
 
 WINDOW_CHARS = 40  # janela de contexto (chars) ao redor do termo de anatomia
 
@@ -237,21 +246,3 @@ def evaluate_against_gold(df: pd.DataFrame) -> pd.DataFrame:
         rows.append(row)
 
     return pd.DataFrame(rows).set_index("label")
-
-
-if __name__ == "__main__":
-    df = pd.read_csv(config.TRAIN_CSV)
-
-    print("=== Avaliação das regras contra os estudos com label verdadeiro ===")
-    metrics = evaluate_against_gold(df)
-    print(metrics.round(3))
-
-    print(f"\n(Excluídas das pseudo-labels: {sorted(EXCLUDED_FROM_PSEUDO_LABELS)} -- gold insuficiente pra calibrar)")
-
-    print("\n=== Gerando pseudo-labels para os estudos sem label completo ===")
-    out = generate_pseudo_labels(df)
-    n_pseudo = out["is_pseudo_label"].sum()
-    print(f"Estudos que ganharam ao menos 1 pseudo-label: {n_pseudo}")
-    other_cols = [c for c in config.TARGET_COLUMNS if c not in EXCLUDED_FROM_PSEUDO_LABELS]
-    still_missing = out.loc[out["is_pseudo_label"], other_cols].isna().any(axis=1).sum()
-    print(f"Desses, ainda com NaN em alguma das 10 colunas não-excluídas: {still_missing}")
