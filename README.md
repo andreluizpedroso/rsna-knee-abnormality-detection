@@ -17,75 +17,6 @@ relevantes no joelho a partir de MRI, desenvolvido para a competição Kaggle
 - **Prêmio**: existe uma trilha adicional de eficiência que pondera AUC vs.
   tempo de execução, o que motiva manter o pipeline enxuto.
 
-## Pipeline ativo: `src/rsna_knee/`
-
-O pipeline em desenvolvimento ativo é o pacote próprio `src/rsna_knee/`:
-weak supervision por regras sobre o `Report`, seleção de série
-sagital fluid-sensitive, normalização de lateralidade via geometria DICOM,
-encoder DINOv2-small + cabeça de classificação para as 12 classes.
-
-Um notebook público de terceiros (licença Apache 2.0) foi usado
-temporariamente como pipeline de submissão pra aprender técnicas gerais de
-processamento de imagem médica/DICOM que o pipeline próprio ainda não
-tinha (ver "Histórico de submissões públicas" abaixo) — o objetivo sempre
-foi trazer essas técnicas de volta pro `src/rsna_knee/` em termos próprios,
-não depender do código dele continuamente. Roadmap de técnicas a portar
-(ordenação de slice por geometria, TTA, ensemble ponderado por holdout,
-etc.) documentado no `CLAUDE.md`.
-
-### Estrutura do pacote
-
-```
-src/rsna_knee/
-  config.py           # paths, hiperparâmetros, lista de targets (centralizado)
-  data/
-    dicom.py           # I/O de baixo nível (leitura, normalização, resize)
-    laterality.py      # normalização de lateralidade via geometria DICOM
-    series.py          # seleção de série (sagital fluid-sensitive)
-    slices.py          # seleção de slice dentro da série
-    labels.py           # weak supervision (pseudo-labels a partir do Report)
-    dataset.py          # Dataset/DataLoader do PyTorch
-  modeling/
-    backbone.py          # encoder de imagem (DINOv2 via timm)
-    heads.py              # cabeça de classificação
-    model.py               # composição backbone + head
-    ensemble.py             # ensemble entre checkpoints (roadmap, vazio hoje)
-  training/
-    validation.py           # AUC-ROC macro
-    loop.py                  # loop de treino/validação por fold
-  inference/
-    submission.py             # carrega checkpoints, ensemble, gera submission.csv
-    tta.py                     # TTA de slice (roadmap, vazio hoje)
-  cli/
-    train.py                    # entrypoint: python -m src.rsna_knee.cli.train
-    infer.py                     # entrypoint: python -m src.rsna_knee.cli.infer
-    evaluate_labels.py            # avalia as regras de weak supervision
-tests/                            # pytest, sem GPU/dados reais (sintéticos/mocks)
-```
-
-## Histórico de submissões públicas
-
-Entre as sessões em que o pipeline próprio ficou pausado, um notebook
-público (licença Apache 2.0) foi adotado como pipeline de submissão —
-permitido pelas regras da competição, código público pode ser reaproveitado
-(não pode ser compartilhado *privadamente* entre times). Isso gerou 4
-submissões oficiais reais, que continuam válidas no leaderboard:
-
-| Abordagem | publicScore |
-|---|---|
-| Cópia direta do notebook original (treina do zero, GPU T4) | 0.824 |
-| Split treino/infer (rank-mean r224+r336) | 0.833 |
-| Ensemble de pesos publicados + patch TTA, CPU | 0.878 |
-| Ensemble de pesos publicados + patch TTA, GPU T4 | **0.893** |
-
-Os notebooks reais que rodaram estão em `notebooks/ativo/04_ensemble_infer/`
-e `notebooks/ativo/04b_continue_finetune/` (cada pasta com o `.ipynb`
-pulled do Kaggle + `kernel-metadata.json`) — mantidos como **registro
-histórico** de que rodaram e atingiram esses scores, não como alvo de
-desenvolvimento daqui pra frente. Ver `KAGGLE_WORKFLOW.md` pra reproduzir
-o resultado 0.893 se algum dia for útil de novo, e `NOTICE.md` pra
-atribuição legal ao código de terceiros.
-
 ## Dados
 
 - `train.csv`: uma linha por estudo (`StudyInstanceUID`, `Report`, 12
@@ -105,29 +36,53 @@ atribuição legal ao código de terceiros.
   isso.
 - Dataset completo: 819.640 arquivos DICOM, 569.76 GB.
 
+## Abordagem
+
+Pipeline próprio em `src/rsna_knee/`: weak supervision por regras sobre o
+`Report`, seleção de série sagital fluid-sensitive, normalização de
+lateralidade via geometria DICOM, encoder DINOv2-small + cabeça de
+classificação para as 12 classes. Roadmap de técnicas a implementar
+(ordenação de slice por geometria, TTA, ensemble ponderado por holdout,
+etc.) documentado no `CLAUDE.md`.
+
 ## Estrutura do projeto
 
 ```
 data/                          # dados da competição (não versionado)
-notebooks/
-  historico/                    # notebooks .ipynb soltos do início do projeto
-    01_eda.ipynb                  # exploração inicial dos dados
-    02_train_kaggle.ipynb         # treino no Kaggle (versão antiga do pipeline)
-    02b_refresh_submission_assets.ipynb
-    03_submit_kaggle.ipynb
-  ativo/                         # histórico de submissões públicas (ver seção acima)
-    04_ensemble_infer/            # .ipynb + kernel-metadata.json (datasets/models/GPU
-    04b_continue_finetune/        # anexados), reproduzível sozinho no Kaggle
-src/rsna_knee/                  # PIPELINE ATIVO -- ver "Estrutura do pacote" acima
+notebooks/historico/
+  01_eda.ipynb                   # exploração inicial dos dados
+  02_train_kaggle.ipynb          # treino no Kaggle (Internet On, GPU)
+  03_submit_kaggle.ipynb         # submissão no Kaggle (Internet Off)
+src/rsna_knee/                  # pacote do pipeline
+  config.py                      # paths, hiperparâmetros, lista de targets
+  data/
+    dicom.py                       # I/O de baixo nível (leitura, normalização, resize)
+    laterality.py                  # normalização de lateralidade via geometria DICOM
+    series.py                      # seleção de série (sagital fluid-sensitive)
+    slices.py                      # seleção de slice dentro da série
+    labels.py                      # weak supervision (pseudo-labels a partir do Report)
+    dataset.py                     # Dataset/DataLoader do PyTorch
+  modeling/
+    backbone.py                    # encoder de imagem (DINOv2 via timm)
+    heads.py                       # cabeça de classificação
+    model.py                       # composição backbone + head
+    ensemble.py                    # ensemble entre checkpoints (roadmap, vazio hoje)
+  training/
+    validation.py                  # AUC-ROC macro
+    loop.py                        # loop de treino/validação por fold
+  inference/
+    submission.py                  # carrega checkpoints, ensemble, gera submission.csv
+    tta.py                         # TTA de slice (roadmap, vazio hoje)
+  cli/
+    train.py                       # entrypoint: python -m src.rsna_knee.cli.train
+    infer.py                       # entrypoint: python -m src.rsna_knee.cli.infer
+    evaluate_labels.py             # avalia as regras de weak supervision
+tests/                          # pytest, sem GPU/dados reais (sintéticos/mocks)
 scripts/
-  download_data.sh              # download dos dados via Kaggle API
-  download_sample_images.py     # baixa amostra mínima pra --smoke-test
-checkpoints/                    # saída local do treino (src.rsna_knee.cli.train);
-                                 # *.pth gitignored, nunca vai pro GitHub
+  download_data.sh                # download dos dados via Kaggle API
+  download_sample_images.py       # baixa amostra mínima pra --smoke-test
+checkpoints/                    # saída local do treino (*.pth gitignored, nunca vai pro GitHub)
 submissions/                    # submissões geradas localmente
-tests/                          # pytest
-KAGGLE_WORKFLOW.md              # como reproduzir o histórico de submissões públicas
-NOTICE.md                       # atribuição legal a código de terceiros reaproveitado
 ```
 
 ## Como rodar
@@ -179,22 +134,14 @@ pytest tests/
 ```
 
 O treino em escala real acontece em um Kaggle Notebook (GPU gratuita, dados
-já montados no ambiente) — é uma exigência da competição, já que a
-submissão final não pode depender de acesso à internet nem de upload direto
-de artefatos externos.
+já montados no ambiente) via `notebooks/historico/02_train_kaggle.ipynb` —
+é uma exigência da competição, já que a submissão final
+(`03_submit_kaggle.ipynb`) não pode depender de acesso à internet nem de
+upload direto de artefatos externos.
 
 ## Status
 
-- Pipeline ativo (`src/rsna_knee/`): reestruturado em pacote modular,
-  paridade de comportamento confirmada contra a versão anterior (mesmos
-  arquivos soltos migrados 1:1). Melhor score oficial confirmado até agora
-  com esta lógica: 0.604 (macro AUC-ROC, publicScore) — roadmap de técnicas
-  novas em `CLAUDE.md`.
-- Histórico de submissões públicas (`notebooks/ativo/`): melhor score
-  oficial confirmado **0.893**, mantido como registro, não em
-  desenvolvimento ativo (ver seção acima).
-
-## Créditos
-
-Ver `NOTICE.md` para a atribuição legal ao código de terceiros usado no
-histórico de submissões públicas (licença Apache 2.0).
+Pipeline (`src/rsna_knee/`) reestruturado em pacote modular, paridade de
+comportamento confirmada contra a versão anterior. Melhor score oficial
+confirmado até agora: 0.604 (macro AUC-ROC, publicScore) — roadmap de
+técnicas novas priorizado em `CLAUDE.md`.
