@@ -136,14 +136,40 @@ Gerar submissão a partir de um ou mais checkpoints (ensemble):
 python -m src.rsna_knee.cli.infer --checkpoint checkpoints/best_fold0.pth
 ```
 
-Validar o pacote público Pilkwang/pesos no Kaggle:
+## Inferência Pilkwang v15 (`~0.893`)
+
+Esta é a trilha que tenta reproduzir o melhor resultado conhecido do
+projeto. Ela não treina: usa os pesos públicos do Pilkwang e roda somente a
+inferência sobre o test set montado pelo Kaggle.
+
+No Kaggle Notebook, anexe:
+
+- competição `rsna-knee-abnormality-detection`;
+- dataset público `pilkwang/rsna-knee-weights`;
+- Kaggle Model `metaresearch/dinov2/PyTorch/small/1`;
+- internet desligada para submissão;
+- preferencialmente GPU T4 para reproduzir o score alto. Em CPU, o pipeline
+  pode cair para perto de `0.878` por cortes de TTA/orçamento de tempo.
+
+Dry-run para validar se os inputs foram localizados e se o `manifest.json`
+dos pesos é compatível:
 
 ```bash
 python -m src.rsna_knee.cli.infer_pilkwang --dry-run --out /kaggle/working/submission.csv
 ```
 
-Veja `KAGGLE_WORKFLOW.md` para os inputs necessários e a diferença entre o
-pipeline histórico (`~0.604`) e a linha forte (`~0.893`).
+Inferência real:
+
+```bash
+python -m src.rsna_knee.cli.infer_pilkwang --out /kaggle/working/submission.csv
+```
+
+Antes de submeter, confira que `/kaggle/working/submission.csv` tem uma
+linha por estudo, as 12 colunas de target, valores numéricos e nenhum nulo.
+Se o score divergir muito do histórico `~0.893`, investigue primeiro:
+slots/`pixel_group` do manifest, fingerprint dos checkpoints, ordenação de
+slices, lateralidade (`corner_x` vs. `centre`), crop `130mm` e TTA especial
+para `Fracture`/`Lateral Meniscus`.
 
 Avaliar as regras de weak supervision contra os estudos com label real:
 
@@ -166,7 +192,7 @@ upload direto de artefatos externos.
 ## Status
 
 O repo agora separa o pipeline próprio/histórico da referência pública que
-explica o salto para `publicScore ~= 0.893`. A inferência 0.893 ainda não
-está totalmente portada para `src/rsna_knee`: já existem manifest/modelo/TTA
-compatíveis. Falta validar no Kaggle/T4 contra o leaderboard para confirmar
-que o port modular reproduz o score histórico.
+explica o salto para `publicScore ~= 0.893`. O port modular da inferência
+Pilkwang v15 está implementado em `src/rsna_knee/pilkwang/`; falta validar
+no Kaggle/T4 contra o leaderboard para confirmar que ele reproduz o score
+histórico.
