@@ -18,6 +18,7 @@ pillow
 torch
 torchvision
 timm
+transformers
 
 # Validação estratificada multi-label (só 58 estudos com label completo,
 # MCL com 9 positivos -- StratifiedKFold comum não lida com multi-label)

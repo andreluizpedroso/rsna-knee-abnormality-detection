@@ -36,14 +36,25 @@ relevantes no joelho a partir de MRI, desenvolvido para a competição Kaggle
   isso.
 - Dataset completo: 819.640 arquivos DICOM, 569.76 GB.
 
-## Abordagem
+## Abordagem atual
 
-Pipeline próprio em `src/rsna_knee/`: weak supervision por regras sobre o
-`Report`, seleção de série sagital fluid-sensitive, normalização de
-lateralidade via geometria DICOM, encoder DINOv2-small + cabeça de
-classificação para as 12 classes. Roadmap de técnicas a implementar
-(ordenação de slice por geometria, TTA, ensemble ponderado por holdout,
-etc.) documentado no `CLAUDE.md`.
+Há duas linhas no projeto, e essa distinção é importante:
+
+- **Pipeline próprio/histórico** em `src/rsna_knee/`: weak supervision por
+  regras sobre o `Report`, seleção de série, DINOv2-small e inferência por
+  checkpoints próprios. Essa linha chegou a `publicScore ~= 0.604`.
+- **Linha forte em internalização**: reprodução das ideias do notebook
+  público `pilkwang/rsna-knee-baseline-v1` v15, com pesos públicos
+  `pilkwang/rsna-knee-weights`, ensemble de 20 members e TTA. Essa linha
+  produziu `publicScore ~= 0.893` quando rodada no Kaggle com GPU T4.
+
+A referência pública fica em `references/pilkwang_rsna_knee_baseline_v1/`
+com crédito ao autor. O código próprio de compatibilidade começou em
+`src/rsna_knee/pilkwang/`; ele valida manifest/pesos, define a arquitetura
+`SlotHead`/`PilkwangModel`, contratos de slots e agregação TTA por target.
+Também já há o caminho de pixels/cache v15 (`walk/annotate/pick_slots/
+build_cache`) e a CLI de inferência completa para rodar no Kaggle com os
+pesos anexados.
 
 ## Estrutura do projeto
 
@@ -73,10 +84,14 @@ src/rsna_knee/                  # pacote do pipeline
   inference/
     submission.py                  # carrega checkpoints, ensemble, gera submission.csv
     tta.py                         # TTA de slice (roadmap, vazio hoje)
+  pilkwang/                       # contratos da linha pública v15/0.893
   cli/
     train.py                       # entrypoint: python -m src.rsna_knee.cli.train
     infer.py                       # entrypoint: python -m src.rsna_knee.cli.infer
+    infer_pilkwang.py              # valida pacote de pesos públicos/TTA v15
     evaluate_labels.py             # avalia as regras de weak supervision
+references/
+  pilkwang_rsna_knee_baseline_v1/  # notebook público usado como referência
 tests/                          # pytest, sem GPU/dados reais (sintéticos/mocks)
 scripts/
   download_data.sh                # download dos dados via Kaggle API
@@ -121,6 +136,15 @@ Gerar submissão a partir de um ou mais checkpoints (ensemble):
 python -m src.rsna_knee.cli.infer --checkpoint checkpoints/best_fold0.pth
 ```
 
+Validar o pacote público Pilkwang/pesos no Kaggle:
+
+```bash
+python -m src.rsna_knee.cli.infer_pilkwang --dry-run --out /kaggle/working/submission.csv
+```
+
+Veja `KAGGLE_WORKFLOW.md` para os inputs necessários e a diferença entre o
+pipeline histórico (`~0.604`) e a linha forte (`~0.893`).
+
 Avaliar as regras de weak supervision contra os estudos com label real:
 
 ```bash
@@ -141,7 +165,8 @@ upload direto de artefatos externos.
 
 ## Status
 
-Pipeline (`src/rsna_knee/`) reestruturado em pacote modular, paridade de
-comportamento confirmada contra a versão anterior. Melhor score oficial
-confirmado até agora: 0.604 (macro AUC-ROC, publicScore) — roadmap de
-técnicas novas priorizado em `CLAUDE.md`.
+O repo agora separa o pipeline próprio/histórico da referência pública que
+explica o salto para `publicScore ~= 0.893`. A inferência 0.893 ainda não
+está totalmente portada para `src/rsna_knee`: já existem manifest/modelo/TTA
+compatíveis. Falta validar no Kaggle/T4 contra o leaderboard para confirmar
+que o port modular reproduz o score histórico.

@@ -15,3 +15,5 @@ kaggle.json
 # Notas de desenvolvimento internas -- não fazem parte do repositório público
 CLAUDE.md
 PROGRESS.md
+AGENT_HANDOFF.md
+KAGGLE_WORKFLOW.md
