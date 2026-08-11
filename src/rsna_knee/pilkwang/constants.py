@@ -75,9 +75,19 @@ TTA_OVERLAP = True
 TTA_POOL = "prob"
 
 # Patch da comunidade (renta0426): esses alvos agregam as janelas de TTA por
-# máximo em vez de média, mantendo a média para os demais.
+# máximo em vez de média, mantendo a média para os demais. Ampliado de 2 pra
+# 4 targets na v15-tta-more-targets (publicScore 0.893 -> 0.897): fratura e
+# ruptura de menisco (medial e lateral) e contusão costumam aparecer numa
+# janela específica da pilha de slices; média dilui o sinal com janelas que
+# não veem o achado, máximo captura a janela que efetivamente viu. Ampliado
+# de novo pra 6 targets (0.897 -> 0.899): ACL e MCL têm o mesmo padrão
+# (ligamento visível só em parte dos cortes).
 TTA_TARGET_POOL = {
     "Fracture": "max",
     "Lateral Meniscus": "max",
+    "Medial Meniscus": "max",
+    "Contusion": "max",
+    "ACL": "max",
+    "MCL": "max",
 }
 
