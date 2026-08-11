@@ -22,6 +22,13 @@ na conta do Kaggle. Essa pasta existe pra não depender só disso.
   (renta0426, publicScore 0.893), que por sua vez roda o pacote de pesos
   públicos `pilkwang/rsna-knee-weights` (20 members, ensemble) sobre a
   arquitetura DINOv2-small com atenção por slot.
+- Variações de `TTA_TARGET_POOL` já testadas e descartadas (não bateram
+  o `"max"`): `"top3"` (0.898), `"logit_mean"` nos 6 targets restantes
+  (0.899, empatou), `"top2"` (0.898). Histórico completo em
+  `PROGRESS.md`.
+- Todo o markdown e os comentários de código deste notebook foram
+  traduzidos pra português (mantendo termos técnicos em inglês); a
+  lógica não foi alterada.
 
 ## Dependências Kaggle (precisa desses inputs anexados pra rodar)
 
