@@ -61,6 +61,66 @@ Tudo isso já está registrado em `kernel-metadata.json` nesta pasta.
 - Roda bem mais pesado que a linha anterior (3 backbones DINOv2 + 1
   ResNet50, mais datasets pra baixar) — esperar mais tempo de execução.
 
+## Arquitetura (reconstruída a partir do código -- notebook não tem prosa)
+
+O notebook não tem nenhuma documentação explicando as decisões (ao
+contrário do v15 anterior). Mapeamos a estrutura lendo as 27 células
+depois de confirmar o `publicScore = 0.911`. É um "ensemble de
+ensembles": pelo menos 5 sub-pipelines de modelagem independentes,
+combinados por média ponderada de rank (`_combine`, e depois um blend
+final adicional). Achados, célula por célula:
+
+1. **Base (células 1-14)** -- mesma linhagem do Pilkwang que já
+   conhecíamos: extração de label por regex sobre o laudo (versão mais
+   refinada, com mais idiomas e mais "features" configuráveis:
+   `unwrap`, `directional_negation`, `oa_inherit`, `graded_pathology`,
+   `synovitis_backoff`), DICOM/slot/lateralidade/cache idênticos ao que
+   usamos, `SlotHead`/`Model` (DINOv2 + atenção por slot), mesmo
+   mecanismo de `fingerprint`/`check_fingerprint` que já conhecemos.
+   Roda em **múltiplas threads/dispositivos em paralelo** (`worker(dev)`
+   por GPU), e é **tolerante a falha por member** -- se um member falha,
+   tenta no dispositivo par ou é descartado sem derrubar a execução
+   inteira (diferente do que aconteceu com a gente quando um fingerprint
+   errado travava tudo).
+2. **`submission_public_0899.csv`** -- o notebook mantém, à parte, um
+   subconjunto "public frontier" de members que reproduz exatamente o
+   0.899 conhecido, como fallback/registro -- confirma que o autor está
+   ciente da mesma linha-base que usamos.
+3. **Arm RTAHMIL (célula 16)** -- pipeline de MIL (multi-instance
+   learning) independente, com sua própria leitura de DICOM e
+   checkpoints próprios. Tem um "especialista em sinovite"
+   (`run_report_teacher_synovitis_specialist`) que mistura um sinal
+   "professor" derivado do laudo/LLM só nesse target.
+4. **Arm híbrido (célula 17, ~45KB, tem o `HYB_TEACHER_PAYLOAD`)** --
+   outro pipeline DINOv2 independente que treina modelos lineares
+   pequenos **em tempo de inferência**, usando um payload de
+   pseudo-labels pré-computado (comprimido, embutido no próprio
+   notebook) + um punhado de labels exatos (gold), mirado em targets
+   fracos (menciona Lateral OA).
+5. **Arm RadImageNet (células 22 e 25)** -- arquitetura de pooling
+   própria (`Net`, várias classes de atenção/pooling) sobre um
+   **ResNet50 pré-treinado em RadImageNet** (backbone diferente do
+   DINOv2), com checkpoints verificados por **SHA-256** antes de
+   carregar (boa prática -- mais rigoroso que o que a gente fazia).
+6. **"Yash public ensemble" (célula 18)** -- localiza e valida mais um
+   arquivo de submissão pública de terceiro, também incorporado.
+7. **Arm 5 / `timm`+OpenCV (células 20-24)** -- um quinto pipeline
+   completamente separado (biblioteca `timm` em vez de
+   `transformers`/DINOv2), definido *depois* do `main()` já ter rodado e
+   escrito o `submission.csv` combinado das partes 1-6. No final, lê
+   esse `submission.csv`, converte pra rank, e mistura com as próprias
+   previsões via `(1-A5_W)*rank_base + A5_W*rank_arm5` -- um blend final
+   por cima de tudo.
+8. **Segurança/robustez**: fingerprint por member, tolerância a falha
+   por member, fallback de benchmark 0.5 em qualquer exceção não tratada
+   (mesmo padrão que já usávamos), e o `HYB_TEACHER_PAYLOAD` decodificado
+   com `allow_pickle=False` (sem risco de execução de código arbitrário).
+
+**Implicação prática**: iterar nesse notebook não é como o v15 (uma
+célula de config isolada, `TTA_TARGET_POOL`). Qualquer mudança de baixo
+risco precisa identificar em qual dos 5+ arms ela se aplica antes de
+mexer -- ver `PROGRESS.md` pra próximos passos dessa investigação.
+
 ## Checagem de segurança feita antes de adotar
 
 Notebook escaneado por padrões de risco (`subprocess`, `os.system`,
