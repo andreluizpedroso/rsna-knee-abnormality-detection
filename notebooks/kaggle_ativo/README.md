@@ -1,152 +1,54 @@
-# Notebook real da competição (linha híbrida: RadImageNet + LLM)
+# Notebook real da competição (linha ativa: DINO-RadImageNet Rank Ensemble)
 
 Este é o snapshot versionado do notebook Kaggle que gera o melhor
-`publicScore` real da competição. Substituiu a linha anterior (v15 +
-TTA, `notebooks/kaggle_ativo_v15_tta/`, `publicScore = 0.899`) em
-2026-08-17.
+`publicScore` real da competição. Substituiu a linha anterior (híbrida
+RadImageNet+LLM, `notebooks/kaggle_ativo_hybrid_radimagenet_llm/`,
+`publicScore = 0.911`) em 2026-08-17.
 
 ## Estado atual
 
-- Kernel: `andreluizpedroso/rsna-knee-hybrid-radimagenet-llm`
-  (https://www.kaggle.com/code/andreluizpedroso/rsna-knee-hybrid-radimagenet-llm)
-- Arquivo: `rsna-knee-90-reports-llm-30-epochs.ipynb` (nome original
-  mantido do notebook de origem).
-- **`publicScore = 0.911` confirmado** em 2026-08-17 (submissão própria,
-  rank 370 no leaderboard público no momento da confirmação, empatado
-  com outros times na mesma faixa) — melhor resultado real da
-  competição até agora. Histórico completo em `PROGRESS.md`.
-- Origem: fork de `salemali7/rsna-knee-90-reports-llm-30-epochs`
-  (notebook público, licença Apache 2.0), que por sua vez parte da linha
-  do Pilkwang Kim (mesma origem da linha anterior). Soma um segundo
-  backbone (ResNet50 pré-treinado em RadImageNet, além do DINOv2) e usa
-  labels extraídas via LLM comercial sobre os laudos radiológicos
-  (permitido pelas regras da competição, confirmado pelo host).
-- **Notebook sem documentação em prosa** (ao contrário da linha anterior,
-  que tinha markdown explicando cada decisão de design) — só uma célula
-  com imagem. Entender o que ele faz exige ler o código diretamente.
-- Score de 0.911 **não foi aceito só porque terceiros relataram** — foi
-  confirmado via submissão própria antes de adotar essa linha (mesma
-  metodologia usada a sessão inteira: nunca decidir por número de
-  terceiro sem confirmar na nossa conta).
+- Kernel: `andreluizpedroso/rsna-knee-tony-rank-ensemble`
+  (https://www.kaggle.com/code/andreluizpedroso/rsna-knee-tony-rank-ensemble)
+- Arquivo: `rsna-knee-dino-radimagenet-rank-ensemble.ipynb`.
+- **`publicScore = 0.920` confirmado** em 2026-08-17 21:38:15 (submissão
+  própria) — melhor resultado real da competição até agora. Histórico
+  completo em `PROGRESS.md`.
+- Origem: baseado no dataset de assets `tonylica/rsna-knee-bend-dinov3-0917-repro-assets`.
+  Ensemble de 35 checkpoints + 1 encoder compartilhado:
+  - 20 checkpoints DINOv2-small (5 folds)
+  - 5 checkpoints DINOv3-small (5 folds) — pesos próprios embutidos no
+    dataset de assets, não são um `model_source` externo do Kaggle
+  - 5 cabeças de atenção RadImageNet (referência) + 5 cabeças E13
+    RadImageNet, reaproveitadas numa segunda disposição de slots de
+    imagem (view extra, não checkpoints adicionais)
+  - 1 encoder ResNet-50 RadImageNet compartilhado pelas 10 cabeças
+  - Combinação final: rank ensemble (não é média direta de
+    probabilidade — evita que um arm com escala/calibração diferente
+    domine o blend)
+- Bem menos dependências externas que a linha híbrida anterior (10
+  datasets/7 contas) — aqui é essencialmente 1 dataset de assets
+  (`tonylica`) + o encoder DINOv2-small público. Superfície de risco de
+  fragilidade de terceiros bem menor.
+- **Notebook sem documentação em prosa** além da célula inicial de
+  inventário dos models — entender qualquer célula exige ler o código.
 
 ## Dependências Kaggle (precisa desses inputs anexados pra rodar)
 
-Bem mais dependências que a linha anterior — **10 datasets de pelo menos
-7 contas Kaggle diferentes**, não só do Pilkwang. Risco de fragilidade
-real: qualquer um desses terceiros pode apagar/tornar privado o dataset
-dele no futuro, quebrando a reprodução sem aviso.
-
-- Datasets: `mattiaangeli/knee-mri-fold-weights`,
-  `marwanmath/resnet-50-radimagenet-marwan`,
-  `antoinegg1/rsna-knee-e9-radimagenet-heads-v15`,
-  `flight0234/rsna-knee-hybrid-report-labels`,
-  `stevenleehans/rsna-knee-llm-report-labels`,
-  `lixin73/rsna-knee-llm-report-labels-sol56`,
-  `pilkwang/rsna-knee-llm-labels`,
-  `mattiaangeli/rsna-knee-radimagenet-foldsv1-heads`,
-  `pilkwang/rsna-knee-weights`, `tonylica/rsna2026-models`
-- Models: `metaresearch/dinov2/PyTorch/small/1`,
-  `metaresearch/dinov2/PyTorch/base/1`,
-  `metaresearch/dinov2/PyTorch/large/1` (3 variantes, não só `small`)
-- Competition: `rsna-knee-abnormality-detection`
-
-Tudo isso já está registrado em `kernel-metadata.json` nesta pasta.
-
-## Requisitos de execução
-
-- **GPU T4** (não P100 — a API de submissão do Kaggle rejeita P100
-  nesta competição. O Kaggle já reverteu o acelerador pro default (P100)
-  sozinho mais de uma vez — sempre conferir/trocar antes de rodar).
-- Internet Off (`enable_internet: false`, já no metadata).
-- Roda bem mais pesado que a linha anterior (3 backbones DINOv2 + 1
-  ResNet50, mais datasets pra baixar) — esperar mais tempo de execução.
-
-## Arquitetura (reconstruída a partir do código -- notebook não tem prosa)
-
-O notebook não tem nenhuma documentação explicando as decisões (ao
-contrário do v15 anterior). Mapeamos a estrutura lendo as 27 células
-depois de confirmar o `publicScore = 0.911`. É um "ensemble de
-ensembles": pelo menos 5 sub-pipelines de modelagem independentes,
-combinados por média ponderada de rank (`_combine`, e depois um blend
-final adicional). Achados, célula por célula:
-
-1. **Base (células 1-14)** -- mesma linhagem do Pilkwang que já
-   conhecíamos: extração de label por regex sobre o laudo (versão mais
-   refinada, com mais idiomas e mais "features" configuráveis:
-   `unwrap`, `directional_negation`, `oa_inherit`, `graded_pathology`,
-   `synovitis_backoff`), DICOM/slot/lateralidade/cache idênticos ao que
-   usamos, `SlotHead`/`Model` (DINOv2 + atenção por slot), mesmo
-   mecanismo de `fingerprint`/`check_fingerprint` que já conhecemos.
-   Roda em **múltiplas threads/dispositivos em paralelo** (`worker(dev)`
-   por GPU), e é **tolerante a falha por member** -- se um member falha,
-   tenta no dispositivo par ou é descartado sem derrubar a execução
-   inteira (diferente do que aconteceu com a gente quando um fingerprint
-   errado travava tudo).
-2. **`submission_public_0899.csv`** -- o notebook mantém, à parte, um
-   subconjunto "public frontier" de members que reproduz exatamente o
-   0.899 conhecido, como fallback/registro -- confirma que o autor está
-   ciente da mesma linha-base que usamos.
-3. **Arm RTAHMIL (célula 16)** -- pipeline de MIL (multi-instance
-   learning) independente, com sua própria leitura de DICOM e
-   checkpoints próprios. Tem um "especialista em sinovite"
-   (`run_report_teacher_synovitis_specialist`) que mistura um sinal
-   "professor" derivado do laudo/LLM só nesse target.
-4. **Arm híbrido (célula 17, ~45KB, tem o `HYB_TEACHER_PAYLOAD`)** --
-   outro pipeline DINOv2 independente que treina modelos lineares
-   pequenos **em tempo de inferência**, usando um payload de
-   pseudo-labels pré-computado (comprimido, embutido no próprio
-   notebook) + um punhado de labels exatos (gold), mirado em targets
-   fracos (menciona Lateral OA).
-5. **Arm RadImageNet (células 22 e 25)** -- arquitetura de pooling
-   própria (`Net`, várias classes de atenção/pooling) sobre um
-   **ResNet50 pré-treinado em RadImageNet** (backbone diferente do
-   DINOv2), com checkpoints verificados por **SHA-256** antes de
-   carregar (boa prática -- mais rigoroso que o que a gente fazia).
-6. **"Yash public ensemble" (célula 18)** -- localiza e valida mais um
-   arquivo de submissão pública de terceiro, também incorporado.
-7. **Arm 5 / `timm`+OpenCV (células 20-24)** -- um quinto pipeline
-   completamente separado (biblioteca `timm` em vez de
-   `transformers`/DINOv2), definido *depois* do `main()` já ter rodado e
-   escrito o `submission.csv` combinado das partes 1-6. No final, lê
-   esse `submission.csv`, converte pra rank, e mistura com as próprias
-   previsões via `(1-A5_W)*rank_base + A5_W*rank_arm5` -- um blend final
-   por cima de tudo.
-8. **Segurança/robustez**: fingerprint por member, tolerância a falha
-   por member, fallback de benchmark 0.5 em qualquer exceção não tratada
-   (mesmo padrão que já usávamos), e o `HYB_TEACHER_PAYLOAD` decodificado
-   com `allow_pickle=False` (sem risco de execução de código arbitrário).
-
-**Implicação prática**: iterar nesse notebook não é como o v15 (uma
-célula de config isolada, `TTA_TARGET_POOL`). Qualquer mudança de baixo
-risco precisa identificar em qual dos 5+ arms ela se aplica antes de
-mexer -- ver `PROGRESS.md` pra próximos passos dessa investigação.
-
-## Checagem de segurança feita antes de adotar
-
-Notebook escaneado por padrões de risco (`subprocess`, `os.system`,
-chamadas de rede, `eval`/`exec` suspeitos) antes de rodar pela primeira
-vez -- nenhum encontrado. Há um blob de dados embutido no código
-(`HYB_TEACHER_PAYLOAD`, ~44KB, base64+zlib, provavelmente pseudo-labels
-ou scores de um "professor" pra distillation), decodificado via
-`np.load(..., allow_pickle=False)` -- seguro, essa flag bloqueia
-execução de código arbitrário via pickle.
+- Datasets: `tonylica/rsna-knee-bend-dinov3-0917-repro-assets`
+- Models: `metaresearch/dinov2/PyTorch/small/1`
+- Competição: `rsna-knee-abnormality-detection`
+- GPU T4 habilitada, sem internet (padrão de code competition)
 
 ## Como iterar
 
-Mesma lógica de antes (ver "Regra de autonomia em iteração de baixo
-risco" no `CLAUDE.md`): mudanças de baixo risco são feitas direto no
-notebook, não neste repo em Python separado.
-
-1. `kaggle kernels pull andreluizpedroso/rsna-knee-hybrid-radimagenet-llm -p notebooks/kaggle_ativo -m`
-2. Editar a célula relevante.
-3. `kaggle kernels push -p notebooks/kaggle_ativo`
-4. Rodar no Kaggle (conferir GPU T4 antes), submeter manualmente pela UI
-   ("Submit to Competition" — a submissão via API tem dado erro
-   persistente nesse fluxo, ver `PROGRESS.md`).
-5. Se o `publicScore` melhorar: puxar de novo pra cá (`kaggle kernels
-   pull`) e commitar, atualizando este README com o novo score
-   confirmado. Se piorar/empatar: reverter, re-pushar, documentar a
-   tentativa descartada no `PROGRESS.md`.
-
-Esta pasta deve sempre refletir a **última config confirmada como
-melhor**, nunca uma tentativa ainda pendente de resultado.
+1. `kaggle kernels pull andreluizpedroso/rsna-knee-tony-rank-ensemble -p notebooks/kaggle_ativo -m`
+2. Editar a célula relevante direto no `.ipynb` (4 células: markdown de
+   inventário, arm DINOv2/DINOv3, arm RadImageNet timm/OpenCV, arm
+   RadImageNet ResNet-50).
+3. `kaggle kernels push -p notebooks/kaggle_ativo` — **conferir GPU T4**
+   antes de rodar (Kaggle já reverteu pro P100 default outras vezes
+   nesta competição).
+4. Rodar no Kaggle, submeter manualmente pela UI.
+5. Se `publicScore` melhorar: `kaggle kernels pull` de novo, commitar,
+   atualizar este README e `PROGRESS.md`. Se piorar/empatar: reverter,
+   re-pushar, documentar a tentativa descartada.
